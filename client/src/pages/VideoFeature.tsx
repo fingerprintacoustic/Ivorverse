@@ -15,6 +15,11 @@ export default function VideoFeature() {
   const [isOpen, setIsOpen] = useState(false);
   const [videoDescription, setVideoDescription] = useState("");
   const [currentStep, setCurrentStep] = useState<"concept" | "lyrics" | "scenes" | "images" | "assembly">("concept");
+  const [scenes, setScenes] = useState<string[]>([]);
+  const [sceneImageUrls, setSceneImageUrls] = useState<string[]>([]);
+  const [audioUrl, setAudioUrl] = useState("");
+  const [lyrics, setLyrics] = useState("");
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
 
   const { data: projects, refetch } = trpc.projects.list.useQuery();
   const createProjectMutation = trpc.projects.create.useMutation({
@@ -25,7 +30,28 @@ export default function VideoFeature() {
     },
   });
 
+  const generateScenesMutation = trpc.video.generateScenes.useMutation({
+    onSuccess: (data) => {
+      setScenes(data.scenes);
+      setCurrentStep("images");
+    },
+  });
+
+  const generateImagesMutation = trpc.video.generateSceneImages.useMutation({
+    onSuccess: (data) => {
+      setSceneImageUrls(data.imageUrls);
+      setCurrentStep("assembly");
+    },
+  });
+
+  const assembleMutation = trpc.video.assemble.useMutation({
+    onSuccess: (data) => {
+      setVideoUrl(data.videoUrl);
+    },
+  });
+
   const videoProjects = projects?.filter((p) => p.type === "video") || [];
+  const currentProjectId = videoProjects[0]?.id;
 
   const handleCreateProject = async () => {
     if (!projectName.trim()) return;
@@ -37,9 +63,24 @@ export default function VideoFeature() {
     });
   };
 
+  const handleGenerateScenes = () => {
+    if (!currentProjectId || !videoDescription.trim()) return;
+    generateScenesMutation.mutate({ projectId: currentProjectId, concept: videoDescription });
+  };
+
+  const handleGenerateImages = () => {
+    if (!currentProjectId) return;
+    generateImagesMutation.mutate({ projectId: currentProjectId });
+  };
+
+  const handleAssemble = () => {
+    if (!currentProjectId || !audioUrl.trim()) return;
+    assembleMutation.mutate({ projectId: currentProjectId, audioUrl, lyrics: lyrics || undefined });
+  };
+
   const steps = [
     { id: "concept", label: "Concept", icon: Zap },
-    { id: "lyrics", label: "Generate Lyrics", icon: Music },
+    { id: "lyrics", label: "Song", icon: Music },
     { id: "scenes", label: "Create Scenes", icon: Film },
     { id: "images", label: "Generate Images", icon: ImageIcon },
     { id: "assembly", label: "Assemble Video", icon: Film },
@@ -178,7 +219,7 @@ export default function VideoFeature() {
                       disabled={!videoDescription.trim()}
                       className="w-full"
                     >
-                      Next: Generate Lyrics
+                      Next: Song
                     </Button>
                   </CardContent>
                 </Card>
@@ -187,21 +228,41 @@ export default function VideoFeature() {
               <TabsContent value="lyrics" className="space-y-4">
                 <Card>
                   <CardHeader>
-                    <CardTitle>Generate Lyrics</CardTitle>
+                    <CardTitle>Song</CardTitle>
                     <CardDescription>
-                      AI-generated lyrics based on your concept
+                      Paste the audio URL from a song you generated in Music Studio, plus its
+                      lyrics (used for the video's subtitles)
                     </CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-4">
-                    <div className="bg-muted p-4 rounded-lg min-h-64 text-sm">
-                      <p className="text-muted-foreground">Lyrics will be generated here...</p>
-                    </div>
+                    <Input
+                      placeholder="Audio URL from Music Studio..."
+                      value={audioUrl}
+                      onChange={(e) => setAudioUrl(e.target.value)}
+                    />
+                    <Textarea
+                      placeholder="Lyrics (optional, used for subtitles) — [Verse]/[Chorus] markers are stripped automatically..."
+                      value={lyrics}
+                      onChange={(e) => setLyrics(e.target.value)}
+                      rows={6}
+                    />
                     <div className="flex gap-2">
                       <Button variant="outline" onClick={() => setCurrentStep("concept")}>
                         Back
                       </Button>
-                      <Button onClick={() => setCurrentStep("scenes")} className="flex-1">
-                        Next: Create Scenes
+                      <Button
+                        onClick={handleGenerateScenes}
+                        disabled={!audioUrl.trim() || generateScenesMutation.isPending}
+                        className="flex-1"
+                      >
+                        {generateScenesMutation.isPending ? (
+                          <>
+                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                            Writing scenes...
+                          </>
+                        ) : (
+                          "Next: Create Scenes"
+                        )}
                       </Button>
                     </div>
                   </CardContent>
@@ -218,19 +279,36 @@ export default function VideoFeature() {
                   </CardHeader>
                   <CardContent className="space-y-4">
                     <div className="space-y-3">
-                      {[1, 2, 3, 4].map((i) => (
-                        <div key={i} className="border rounded-lg p-3">
-                          <h4 className="font-semibold text-sm mb-2">Scene {i}</h4>
-                          <p className="text-sm text-muted-foreground">Scene description will appear here...</p>
-                        </div>
-                      ))}
+                      {scenes.length === 0 ? (
+                        <p className="text-sm text-muted-foreground">
+                          No scenes yet — go back and generate them from your concept.
+                        </p>
+                      ) : (
+                        scenes.map((scene, i) => (
+                          <div key={i} className="border rounded-lg p-3">
+                            <h4 className="font-semibold text-sm mb-2">Scene {i + 1}</h4>
+                            <p className="text-sm text-muted-foreground">{scene}</p>
+                          </div>
+                        ))
+                      )}
                     </div>
                     <div className="flex gap-2">
                       <Button variant="outline" onClick={() => setCurrentStep("lyrics")}>
                         Back
                       </Button>
-                      <Button onClick={() => setCurrentStep("images")} className="flex-1">
-                        Next: Generate Images
+                      <Button
+                        onClick={handleGenerateImages}
+                        disabled={scenes.length === 0 || generateImagesMutation.isPending}
+                        className="flex-1"
+                      >
+                        {generateImagesMutation.isPending ? (
+                          <>
+                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                            Generating images...
+                          </>
+                        ) : (
+                          "Next: Generate Images"
+                        )}
                       </Button>
                     </div>
                   </CardContent>
@@ -247,17 +325,27 @@ export default function VideoFeature() {
                   </CardHeader>
                   <CardContent className="space-y-4">
                     <div className="grid grid-cols-2 gap-4">
-                      {[1, 2, 3, 4].map((i) => (
-                        <div key={i} className="border rounded-lg aspect-video bg-muted flex items-center justify-center">
-                          <ImageIcon className="w-8 h-8 text-muted-foreground" />
-                        </div>
-                      ))}
+                      {sceneImageUrls.length === 0 ? (
+                        [1, 2, 3, 4].map((i) => (
+                          <div key={i} className="border rounded-lg aspect-video bg-muted flex items-center justify-center">
+                            <ImageIcon className="w-8 h-8 text-muted-foreground" />
+                          </div>
+                        ))
+                      ) : (
+                        sceneImageUrls.map((url, i) => (
+                          <img key={i} src={url} alt={`Scene ${i + 1}`} className="rounded-lg border aspect-video object-cover" />
+                        ))
+                      )}
                     </div>
                     <div className="flex gap-2">
                       <Button variant="outline" onClick={() => setCurrentStep("scenes")}>
                         Back
                       </Button>
-                      <Button onClick={() => setCurrentStep("assembly")} className="flex-1">
+                      <Button
+                        onClick={() => setCurrentStep("assembly")}
+                        disabled={sceneImageUrls.length === 0}
+                        className="flex-1"
+                      >
                         Next: Assemble Video
                       </Button>
                     </div>
@@ -274,29 +362,36 @@ export default function VideoFeature() {
                     </CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-4">
-                    <div className="border rounded-lg aspect-video bg-black flex items-center justify-center">
-                      <Film className="w-16 h-16 text-gray-600" />
-                    </div>
-                    <Button className="w-full">
-                      <Loader2 className="w-4 h-4 mr-2" />
-                      Assembling Video...
+                    {videoUrl ? (
+                      <video controls src={videoUrl} className="w-full rounded-lg border" />
+                    ) : (
+                      <div className="border rounded-lg aspect-video bg-black flex items-center justify-center">
+                        <Film className="w-16 h-16 text-gray-600" />
+                      </div>
+                    )}
+                    <Button
+                      onClick={handleAssemble}
+                      disabled={assembleMutation.isPending || !audioUrl.trim() || sceneImageUrls.length === 0}
+                      className="w-full"
+                    >
+                      {assembleMutation.isPending ? (
+                        <>
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          Assembling video (this can take several minutes)...
+                        </>
+                      ) : (
+                        "Assemble Video"
+                      )}
                     </Button>
-                    <div className="bg-muted p-4 rounded-lg">
-                      <p className="text-sm font-semibold mb-2">Video Details</p>
-                      <ul className="text-sm text-muted-foreground space-y-1">
-                        <li>• Duration: 3:45</li>
-                        <li>• Format: MP4 (1080p)</li>
-                        <li>• Subtitles: Enabled</li>
-                      </ul>
-                    </div>
-                    <div className="flex gap-2">
-                      <Button variant="outline" className="flex-1">
-                        Download Video
-                      </Button>
-                      <Button className="flex-1">
-                        Share
-                      </Button>
-                    </div>
+                    {videoUrl && (
+                      <div className="flex gap-2">
+                        <Button asChild variant="outline" className="flex-1">
+                          <a href={videoUrl} download target="_blank" rel="noreferrer">
+                            Download Video
+                          </a>
+                        </Button>
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
               </TabsContent>

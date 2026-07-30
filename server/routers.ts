@@ -543,6 +543,145 @@ You have a web_search tool available — use it whenever the user asks about cur
       }),
   }),
 
+  // Music Video Generator
+  video: router({
+    generateScenes: protectedProcedure
+      .input(
+        z.object({
+          projectId: z.number(),
+          concept: z.string(),
+          numScenes: z.number().min(1).max(10).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const numScenes = input.numScenes ?? 4;
+
+        const response = await invokeLLM({
+          messages: [
+            {
+              role: "system",
+              content:
+                `You write music video scene descriptions. Respond with ONLY a JSON array of ` +
+                `exactly ${numScenes} strings, each a vivid, concrete visual scene description ` +
+                `suitable for an AI image generator. No prose, no markdown, just the JSON array.`,
+            },
+            { role: "user", content: `Video concept: ${input.concept}` },
+          ],
+        });
+
+        const raw = response.choices[0].message.content;
+        const text = typeof raw === "string" ? raw : JSON.stringify(raw);
+        let scenes: string[];
+        try {
+          const parsed = JSON.parse(text.trim().replace(/^```json\n?|```$/g, ""));
+          scenes = Array.isArray(parsed) ? parsed.map(String) : [text];
+        } catch {
+          // Fall back to splitting by lines if the model didn't return clean JSON.
+          scenes = text.split("\n").map((l) => l.trim()).filter(Boolean).slice(0, numScenes);
+        }
+
+        const existing = await db.getVideoProject(input.projectId, ctx.user.id);
+        if (existing) {
+          await db.updateVideoProject(input.projectId, ctx.user.id, { scenes });
+        } else {
+          await db.createVideoProject(input.projectId, ctx.user.id);
+          await db.updateVideoProject(input.projectId, ctx.user.id, { scenes });
+        }
+
+        await db.trackUsage(ctx.user.id, "video");
+
+        return { scenes };
+      }),
+
+    generateSceneImages: protectedProcedure
+      .input(z.object({ projectId: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const videoProject = await db.getVideoProject(input.projectId, ctx.user.id);
+        const scenes: string[] = Array.isArray(videoProject?.scenes) ? videoProject.scenes : [];
+        if (scenes.length === 0) {
+          throw new Error("Generate scenes before generating images.");
+        }
+
+        const imageUrls: string[] = [];
+        for (const scene of scenes) {
+          const { url } = await generateImage({ prompt: scene });
+          if (url) {
+            imageUrls.push(url);
+            await db.createFile(
+              ctx.user.id,
+              `scene-${Date.now()}.png`,
+              `video-scenes/${ctx.user.id}/${Date.now()}`,
+              url,
+              "image/png",
+              undefined,
+              input.projectId
+            );
+          }
+        }
+
+        await db.updateVideoProject(input.projectId, ctx.user.id, { imageUrls });
+        await db.trackUsage(ctx.user.id, "video");
+
+        return { imageUrls };
+      }),
+
+    assemble: protectedProcedure
+      .input(
+        z.object({
+          projectId: z.number(),
+          audioUrl: z.string(),
+          lyrics: z.string().optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const videoProject = await db.getVideoProject(input.projectId, ctx.user.id);
+        const imageUrls: string[] = Array.isArray(videoProject?.imageUrls) ? videoProject.imageUrls : [];
+        if (imageUrls.length === 0) {
+          throw new Error("Generate scene images before assembling the video.");
+        }
+
+        await db.updateVideoProject(input.projectId, ctx.user.id, { status: "processing", progress: 10 });
+
+        try {
+          const { generateMusicVideo } = await import("./_core/videoGeneration");
+          const { videoUrl, durationSeconds } = await generateMusicVideo({
+            audioUrl: input.audioUrl,
+            sceneImageUrls: imageUrls,
+            lyrics: input.lyrics,
+          });
+
+          await db.updateVideoProject(input.projectId, ctx.user.id, {
+            videoUrl,
+            status: "completed",
+            progress: 100,
+          });
+
+          await db.createFile(
+            ctx.user.id,
+            `music-video-${Date.now()}.mp4`,
+            `videos/${ctx.user.id}/${Date.now()}`,
+            videoUrl,
+            "video/mp4",
+            undefined,
+            input.projectId
+          );
+
+          await db.trackUsage(ctx.user.id, "video_assembly");
+
+          return { videoUrl, durationSeconds };
+        } catch (error) {
+          await db.updateVideoProject(input.projectId, ctx.user.id, { status: "failed", progress: 0 });
+          throw error;
+        }
+      }),
+
+    getProject: protectedProcedure
+      .input(z.object({ projectId: z.number() }))
+      .query(async ({ ctx, input }) => {
+        return await db.getVideoProject(input.projectId, ctx.user.id);
+      }),
+  }),
+
   // Image Studio
   image: router({
     generate: protectedProcedure
