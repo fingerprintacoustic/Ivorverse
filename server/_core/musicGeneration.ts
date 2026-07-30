@@ -1,25 +1,21 @@
 /**
- * Music generation (full song audio, not just lyrics/structure text).
+ * Real song audio generation via ACE-Step, an open-weight (Apache 2.0)
+ * music foundation model — not Suno. Suno has no public API and no
+ * self-hostable weights (proprietary, closed), so it was never an option
+ * to call or clone directly. ACE-Step is a genuinely open model that
+ * independent benchmarks (SongEval) have shown outperforming Suno v5 on
+ * some dimensions, runs on modest consumer GPU hardware, and is fully
+ * self-hostable — no per-track vendor lock-in, no ToS risk.
  *
- * IMPORTANT: As of mid-2026, Suno has no official public developer API.
- * Suno's own product team has said they're exploring a partner API, but it
- * is not self-serve and there is no published endpoint/pricing/SLA. What
- * exists today are third-party reverse-engineered wrappers around Suno's
- * private web-app endpoints — these work, but carry real ToS/legal risk
- * since they're unauthorized by Suno, and can break without notice.
- *
- * This module does NOT hard-wire one of those wrappers without an explicit
- * decision, since that's a legal/business call, not just an engineering one.
- * Instead it exposes a pluggable provider interface. To activate it:
- *
- *   1. Pick a provider (an unofficial Suno wrapper, or an official
- *      alternative like MiniMax Music which does have a published API).
- *   2. Implement `MusicProvider` for it below.
- *   3. Set MUSIC_PROVIDER + the provider's API key env var.
- *
- * Until configured, generateMusic throws a clear, actionable error instead
- * of silently no-op'ing or fabricating audio.
+ * This module calls fal.ai's hosted inference for ACE-Step rather than
+ * standing up our own GPU infrastructure: same open model, same output,
+ * zero ops burden. If full independence from fal.ai is ever wanted, the
+ * exact same weights can be self-hosted (e.g. via the ACE-Step Docker
+ * image on RunPod) and this module's HTTP call swapped for that endpoint
+ * — the interface below (GenerateMusicOptions/GenerateMusicResponse)
+ * doesn't need to change either way.
  */
+import { fal } from "@fal-ai/client";
 
 export type GenerateMusicOptions = {
   prompt: string; // style/genre/mood description
@@ -30,65 +26,47 @@ export type GenerateMusicOptions = {
 
 export type GenerateMusicResponse = {
   audioUrl: string;
-  durationSeconds?: number;
+  seed: number;
 };
 
-interface MusicProvider {
-  name: string;
-  generate(options: GenerateMusicOptions): Promise<GenerateMusicResponse>;
-}
-
-/**
- * Example provider stub for MiniMax Music (which does publish an official
- * API, as of the research done for this migration) — fill in the endpoint
- * details from MiniMax's current docs before use; not implemented here
- * since it wasn't confirmed against a live account/key.
- */
-class MiniMaxMusicProvider implements MusicProvider {
-  name = "minimax";
-  async generate(_options: GenerateMusicOptions): Promise<GenerateMusicResponse> {
-    throw new Error(
-      "MiniMax Music provider is scaffolded but not implemented — wire up the " +
-        "actual endpoint/auth from MiniMax's current API docs before enabling it."
-    );
+function ensureConfigured() {
+  if (!process.env.FAL_KEY) {
+    throw new Error("FAL_KEY is not configured");
   }
-}
-
-/**
- * Placeholder for an unofficial Suno wrapper. Deliberately left
- * unimplemented — using one of these is a legal/ToS-risk decision that
- * should be made explicitly, not defaulted into.
- */
-class UnofficialSunoProvider implements MusicProvider {
-  name = "suno-unofficial";
-  async generate(_options: GenerateMusicOptions): Promise<GenerateMusicResponse> {
-    throw new Error(
-      "No unofficial Suno provider is wired up. Using a reverse-engineered " +
-        "Suno wrapper carries ToS/legal risk since it's unauthorized by Suno — " +
-        "confirm you want to proceed with a specific provider before implementing this."
-    );
-  }
-}
-
-function getProvider(): MusicProvider {
-  const providerName = process.env.MUSIC_PROVIDER;
-  switch (providerName) {
-    case "minimax":
-      return new MiniMaxMusicProvider();
-    case "suno-unofficial":
-      return new UnofficialSunoProvider();
-    default:
-      throw new Error(
-        "No music generation provider configured. Set MUSIC_PROVIDER to 'minimax' " +
-          "(official API, needs implementation) or 'suno-unofficial' (unofficial, " +
-          "carries ToS risk) — see server/_core/musicGeneration.ts for details."
-      );
-  }
+  fal.config({ credentials: process.env.FAL_KEY });
 }
 
 export async function generateMusic(
   options: GenerateMusicOptions
 ): Promise<GenerateMusicResponse> {
-  const provider = getProvider();
-  return await provider.generate(options);
+  ensureConfigured();
+
+  // Explicit lyrics -> use the tags+lyrics endpoint directly for full
+  // control. No lyrics (or instrumental) -> let ACE-Step derive tags and
+  // lyrics from the prompt itself.
+  const useExplicitLyrics = !!options.lyrics && !options.instrumental;
+
+  const result = useExplicitLyrics
+    ? await fal.subscribe("fal-ai/ace-step", {
+        input: {
+          tags: options.prompt,
+          lyrics: options.lyrics,
+          duration: options.durationSeconds ?? 60,
+        },
+      })
+    : await fal.subscribe("fal-ai/ace-step/prompt-to-audio", {
+        input: {
+          prompt: options.prompt,
+          instrumental: options.instrumental ?? false,
+          duration: options.durationSeconds ?? 60,
+        },
+      });
+
+  const data = result.data as { audio: { url: string }; seed: number };
+
+  if (!data?.audio?.url) {
+    throw new Error("Music generation returned no audio.");
+  }
+
+  return { audioUrl: data.audio.url, seed: data.seed };
 }

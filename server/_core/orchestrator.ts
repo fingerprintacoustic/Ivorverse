@@ -12,6 +12,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { generateImage } from "./imageGeneration";
 import { buildApp } from "./appBuilder";
+import { generateMusic } from "./musicGeneration";
 import { setMemory } from "../db";
 
 let _client: Anthropic | null = null;
@@ -99,6 +100,37 @@ const TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "generate_music",
+    description:
+      "Generate a real song with audio (not just lyrics) and return its URL. " +
+      "Use this whenever the user asks to make, create, or generate a song, " +
+      "track, or piece of music with actual playable audio.",
+    input_schema: {
+      type: "object",
+      properties: {
+        prompt: {
+          type: "string",
+          description: "Genre/style/mood description, e.g. 'upbeat pop with guitar'.",
+        },
+        lyrics: {
+          type: "string",
+          description:
+            "Full lyrics to sing, using [Verse]/[Chorus]/[Bridge] section markers. " +
+            "Omit for an instrumental or to let the model write its own lyrics from the prompt.",
+        },
+        instrumental: {
+          type: "boolean",
+          description: "True for no vocals.",
+        },
+        durationSeconds: {
+          type: "number",
+          description: "Length of the track in seconds. Defaults to 60.",
+        },
+      },
+      required: ["prompt"],
+    },
+  },
+  {
     name: "remember_fact",
     description:
       "Store a fact worth remembering across future messages in this project " +
@@ -147,6 +179,21 @@ async function executeTool(
       } catch (error) {
         return JSON.stringify({
           error: error instanceof Error ? error.message : "App build failed for an unknown reason.",
+        });
+      }
+    }
+    case "generate_music": {
+      try {
+        const result = await generateMusic({
+          prompt: input.prompt,
+          lyrics: input.lyrics,
+          instrumental: input.instrumental,
+          durationSeconds: input.durationSeconds,
+        });
+        return JSON.stringify({ audioUrl: result.audioUrl });
+      } catch (error) {
+        return JSON.stringify({
+          error: error instanceof Error ? error.message : "Music generation failed for an unknown reason.",
         });
       }
     }

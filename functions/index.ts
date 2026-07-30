@@ -14,6 +14,7 @@ export const api = onRequest(
       "ANTHROPIC_API_KEY",
       "OPENAI_API_KEY",
       "E2B_API_KEY",
+      "FAL_KEY",
       "STRIPE_SECRET_KEY",
       "JWT_SECRET",
     ],

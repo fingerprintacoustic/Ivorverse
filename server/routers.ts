@@ -537,6 +537,40 @@ ${searchContext ? `\nCurrent information available:\n${searchContext}\nUse this 
 
         return { productionPrompt };
       }),
+
+    generateAudio: protectedProcedure
+      .input(
+        z.object({
+          projectId: z.number(),
+          prompt: z.string(),
+          lyrics: z.string().optional(),
+          instrumental: z.boolean().optional(),
+          durationSeconds: z.number().optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { generateMusic } = await import("./_core/musicGeneration");
+        const { audioUrl, seed } = await generateMusic({
+          prompt: input.prompt,
+          lyrics: input.lyrics,
+          instrumental: input.instrumental,
+          durationSeconds: input.durationSeconds,
+        });
+
+        await db.createFile(
+          ctx.user.id,
+          `song-${Date.now()}.wav`,
+          `music/${ctx.user.id}/${Date.now()}`,
+          audioUrl,
+          "audio/wav",
+          undefined,
+          input.projectId
+        );
+
+        await db.trackUsage(ctx.user.id, "music_audio");
+
+        return { audioUrl, seed };
+      }),
   }),
 
   // Image Studio

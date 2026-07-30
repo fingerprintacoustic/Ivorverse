@@ -15,6 +15,10 @@ export default function MusicFeature() {
   const [isOpen, setIsOpen] = useState(false);
   const [description, setDescription] = useState("");
   const [generatedLyrics, setGeneratedLyrics] = useState<string | null>(null);
+  const [audioPrompt, setAudioPrompt] = useState("");
+  const [audioLyrics, setAudioLyrics] = useState("");
+  const [instrumental, setInstrumental] = useState(false);
+  const [generatedAudioUrl, setGeneratedAudioUrl] = useState<string | null>(null);
 
   const { data: projects, refetch } = trpc.projects.list.useQuery();
   const createProjectMutation = trpc.projects.create.useMutation({
@@ -34,6 +38,11 @@ export default function MusicFeature() {
 
   const generateStructureMutation = trpc.music.generateStructure.useMutation();
   const generateProductionMutation = trpc.music.generateProductionPrompt.useMutation();
+  const generateAudioMutation = trpc.music.generateAudio.useMutation({
+    onSuccess: (data) => {
+      setGeneratedAudioUrl(data.audioUrl);
+    },
+  });
 
   const musicProjects = projects?.filter((p) => p.type === "music") || [];
 
@@ -53,6 +62,17 @@ export default function MusicFeature() {
     await generateLyricsMutation.mutateAsync({
       projectId: musicProjects[0].id,
       prompt: description,
+    });
+  };
+
+  const handleGenerateAudio = async () => {
+    if (!audioPrompt.trim() || !musicProjects[0]) return;
+
+    await generateAudioMutation.mutateAsync({
+      projectId: musicProjects[0].id,
+      prompt: audioPrompt,
+      lyrics: audioLyrics.trim() || undefined,
+      instrumental,
     });
   };
 
@@ -114,12 +134,74 @@ export default function MusicFeature() {
             </CardContent>
           </Card>
         ) : (
-          <Tabs defaultValue="lyrics" className="w-full">
-            <TabsList className="grid w-full grid-cols-3">
+          <Tabs defaultValue="audio" className="w-full">
+            <TabsList className="grid w-full grid-cols-4">
+              <TabsTrigger value="audio">Audio</TabsTrigger>
               <TabsTrigger value="lyrics">Lyrics</TabsTrigger>
               <TabsTrigger value="structure">Structure</TabsTrigger>
               <TabsTrigger value="production">Production</TabsTrigger>
             </TabsList>
+
+            <TabsContent value="audio" className="space-y-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Generate Song</CardTitle>
+                  <CardDescription>
+                    Real, playable audio — style/genre plus optional lyrics
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <Input
+                    placeholder="Style/genre/mood, e.g. 'upbeat pop with guitar'..."
+                    value={audioPrompt}
+                    onChange={(e) => setAudioPrompt(e.target.value)}
+                  />
+                  <Textarea
+                    placeholder="Lyrics (optional) — use [Verse], [Chorus], [Bridge] markers, or leave blank to let it write its own..."
+                    value={audioLyrics}
+                    onChange={(e) => setAudioLyrics(e.target.value)}
+                    rows={4}
+                    disabled={instrumental}
+                  />
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={instrumental}
+                      onChange={(e) => setInstrumental(e.target.checked)}
+                    />
+                    Instrumental (no vocals)
+                  </label>
+                  <Button
+                    onClick={handleGenerateAudio}
+                    disabled={!audioPrompt.trim() || generateAudioMutation.isPending}
+                    className="w-full"
+                  >
+                    {generateAudioMutation.isPending ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        Generating (this can take a minute)...
+                      </>
+                    ) : (
+                      <>
+                        <Music className="w-4 h-4 mr-2" />
+                        Generate Song
+                      </>
+                    )}
+                  </Button>
+
+                  {generatedAudioUrl && (
+                    <div className="mt-6 space-y-3">
+                      <audio controls src={generatedAudioUrl} className="w-full" />
+                      <Button asChild variant="outline" className="w-full">
+                        <a href={generatedAudioUrl} download target="_blank" rel="noreferrer">
+                          Download
+                        </a>
+                      </Button>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </TabsContent>
 
             <TabsContent value="lyrics" className="space-y-4">
               <Card>
