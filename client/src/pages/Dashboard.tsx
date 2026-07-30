@@ -14,6 +14,9 @@ import {
   Film,
   Users,
   Plus,
+  Bot,
+  Workflow as WorkflowIcon,
+  ShoppingBag,
 } from "lucide-react";
 import { useLocation } from "wouter";
 
@@ -78,6 +81,27 @@ export default function Dashboard() {
       description: "Save and reuse characters",
       icon: Users,
       color: "bg-cyan-500",
+    },
+    {
+      id: "agents",
+      name: "Agents",
+      description: "Create agents and track their tasks",
+      icon: Bot,
+      color: "bg-violet-500",
+    },
+    {
+      id: "workflows",
+      name: "Workflows",
+      description: "Define automated workflows",
+      icon: WorkflowIcon,
+      color: "bg-teal-500",
+    },
+    {
+      id: "monetize",
+      name: "Monetization",
+      description: "Manage your products and pricing",
+      icon: ShoppingBag,
+      color: "bg-amber-500",
     },
   ];
 

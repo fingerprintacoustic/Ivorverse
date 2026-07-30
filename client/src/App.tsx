@@ -22,6 +22,9 @@ import Signup from "./pages/Signup";
 import ForgotPassword from "./pages/ForgotPassword";
 import ResetPassword from "./pages/ResetPassword";
 import VerifyEmail from "./pages/VerifyEmail";
+import AgentsFeature from "./pages/AgentsFeature";
+import WorkflowsFeature from "./pages/WorkflowsFeature";
+import MonetizeFeature from "./pages/MonetizeFeature";
 
 function Router() {
   return (
@@ -45,6 +48,9 @@ function Router() {
       <Route path={"/feature/app-builder"} component={AppBuilderFeature} />
       <Route path={"/feature/video"} component={VideoFeature} />
       <Route path={"/feature/character"} component={CharacterFeature} />
+      <Route path={"/feature/agents"} component={AgentsFeature} />
+      <Route path={"/feature/workflows"} component={WorkflowsFeature} />
+      <Route path={"/feature/monetize"} component={MonetizeFeature} />
       <Route path={"/404"} component={NotFound} />
       {/* Final fallback route */}
       <Route component={NotFound} />
