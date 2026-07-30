@@ -11,6 +11,7 @@
  */
 import Anthropic from "@anthropic-ai/sdk";
 import { generateImage } from "./imageGeneration";
+import { buildApp } from "./appBuilder";
 
 let _client: Anthropic | null = null;
 function getClient(): Anthropic {
@@ -53,6 +54,49 @@ const TOOLS: Anthropic.Tool[] = [
       required: ["prompt"],
     },
   },
+  {
+    name: "build_app",
+    description:
+      "Write a set of files into a real, isolated cloud sandbox, install " +
+      "dependencies, start the app, and return a live preview URL. Use this " +
+      "whenever the user asks to build, create, or scaffold a working app, " +
+      "website, or tool — not just to see the code, but to have it actually " +
+      "running. Generate complete, runnable file contents yourself (e.g. a " +
+      "package.json, an index.html or server entrypoint, etc.) before calling " +
+      "this tool.",
+    input_schema: {
+      type: "object",
+      properties: {
+        files: {
+          type: "array",
+          description: "All files the app needs, including package.json.",
+          items: {
+            type: "object",
+            properties: {
+              path: { type: "string", description: "File path, e.g. 'package.json' or 'src/index.js'." },
+              content: { type: "string", description: "Full file contents." },
+            },
+            required: ["path", "content"],
+          },
+        },
+        installCommand: {
+          type: "string",
+          description: "Command to install dependencies. Defaults to 'npm install'.",
+        },
+        startCommand: {
+          type: "string",
+          description:
+            "Command to start the app so it's reachable on the given port, e.g. " +
+            "'npm run dev -- --host 0.0.0.0 --port 3000' or 'node server.js'.",
+        },
+        port: {
+          type: "number",
+          description: "Port the app listens on, matching startCommand.",
+        },
+      },
+      required: ["files", "startCommand", "port"],
+    },
+  },
 ];
 
 async function executeTool(name: string, input: Record<string, any>): Promise<string> {
@@ -62,6 +106,24 @@ async function executeTool(name: string, input: Record<string, any>): Promise<st
       return url
         ? JSON.stringify({ imageUrl: url })
         : JSON.stringify({ error: "Image generation failed to return a URL." });
+    }
+    case "build_app": {
+      try {
+        const result = await buildApp({
+          files: input.files,
+          installCommand: input.installCommand,
+          startCommand: input.startCommand,
+          port: input.port,
+        });
+        return JSON.stringify({
+          previewUrl: result.previewUrl,
+          sandboxId: result.sandboxId,
+        });
+      } catch (error) {
+        return JSON.stringify({
+          error: error instanceof Error ? error.message : "App build failed for an unknown reason.",
+        });
+      }
     }
     default:
       return JSON.stringify({ error: `Unknown tool: ${name}` });
