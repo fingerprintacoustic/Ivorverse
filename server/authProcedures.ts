@@ -5,6 +5,7 @@ import { hashPassword, verifyPassword, generateVerificationToken, generatePasswo
 import { TRPCError } from "@trpc/server";
 import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
+import { createSessionToken } from "./_core/session";
 
 export const emailAuthRouter = router({
   // Email/Password signup
@@ -86,9 +87,10 @@ export const emailAuthRouter = router({
         });
       }
 
-      // Set session cookie
+      // Set session cookie (a signed JWT, verified by session.ts on every request)
       const cookieOptions = getSessionCookieOptions(ctx.req);
-      ctx.res.cookie(COOKIE_NAME, user.id.toString(), cookieOptions);
+      const sessionToken = await createSessionToken(user.id);
+      ctx.res.cookie(COOKIE_NAME, sessionToken, cookieOptions);
 
       return {
         success: true,

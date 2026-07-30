@@ -1,10 +1,10 @@
 export const ENV = {
-  appId: process.env.VITE_APP_ID ?? "",
-  cookieSecret: process.env.JWT_SECRET ?? "",
-  databaseUrl: process.env.DATABASE_URL ?? "",
-  oAuthServerUrl: process.env.OAUTH_SERVER_URL ?? "",
-  ownerOpenId: process.env.OWNER_OPEN_ID ?? "",
   isProduction: process.env.NODE_ENV === "production",
+  // Still used by webSearch.ts (Google search/news/stock via dataApi.ts),
+  // map.ts (Google Maps), and notification.ts. These are Manus's Forge API
+  // proxy — a separate, deliberate decision from the OAuth/session removal,
+  // since replacing them means wiring real Google/Maps/push-notification
+  // providers directly.
   forgeApiUrl: process.env.BUILT_IN_FORGE_API_URL ?? "",
   forgeApiKey: process.env.BUILT_IN_FORGE_API_KEY ?? "",
 };
