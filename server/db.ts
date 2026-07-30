@@ -1,0 +1,742 @@
+/**
+ * Firestore-backed data access layer.
+ *
+ * This replaces the original Drizzle/Postgres implementation (preserved at
+ * server/db.drizzle.ts.bak for reference) with Firestore, while keeping the
+ * exact same exported function names and signatures. routers.ts,
+ * authProcedures.ts, seedTestUsers.ts, and stripe.ts all consume this module
+ * through `import * as db from "./db"` and require no changes.
+ *
+ * Numeric IDs: the original schema used auto-incrementing integer primary
+ * keys, and callers/tests throughout the codebase pass/expect `number` ids.
+ * To avoid a wider refactor, this layer keeps numeric ids by maintaining an
+ * atomic counter per collection (in a `_counters` collection) and using
+ * `String(numericId)` as the Firestore document ID.
+ */
+import { getApps, initializeApp, applicationDefault, cert } from "firebase-admin/app";
+import { getFirestore, Firestore, Timestamp, FieldValue } from "firebase-admin/firestore";
+
+// ---------------------------------------------------------------------------
+// App / Firestore initialization
+// ---------------------------------------------------------------------------
+
+let _db: Firestore | null = null;
+
+export async function getDb(): Promise<Firestore | null> {
+  if (_db) return _db;
+
+  try {
+    if (getApps().length === 0) {
+      // In Cloud Functions / Cloud Run, applicationDefault() picks up the
+      // runtime service account automatically. For local dev, set
+      // GOOGLE_APPLICATION_CREDENTIALS to a service account JSON path, or
+      // FIREBASE_SERVICE_ACCOUNT_JSON to inline the JSON contents.
+      if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+        initializeApp({
+          credential: cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON)),
+        });
+      } else {
+        initializeApp({ credential: applicationDefault() });
+      }
+    }
+    _db = getFirestore();
+  } catch (error) {
+    console.warn("[Firestore] Failed to initialize:", error);
+    _db = null;
+  }
+
+  return _db;
+}
+
+// ---------------------------------------------------------------------------
+// Generic helpers
+// ---------------------------------------------------------------------------
+
+const COUNTERS_COLLECTION = "_counters";
+
+async function nextId(db: Firestore, collectionName: string): Promise<number> {
+  const ref = db.collection(COUNTERS_COLLECTION).doc(collectionName);
+  return await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const current = snap.exists ? (snap.data()!.value as number) : 0;
+    const next = current + 1;
+    tx.set(ref, { value: next }, { merge: true });
+    return next;
+  });
+}
+
+/** Strip undefined values (Firestore rejects them). */
+function clean<T extends Record<string, any>>(obj: T): Partial<T> {
+  const out: Record<string, any> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v !== undefined) out[k] = v;
+  }
+  return out as Partial<T>;
+}
+
+/** Convert Firestore Timestamps back to JS Date on read. */
+function fromFirestore<T extends Record<string, any>>(id: number, data: Record<string, any>): T {
+  const out: Record<string, any> = { id };
+  for (const [k, v] of Object.entries(data)) {
+    out[k] = v instanceof Timestamp ? v.toDate() : v;
+  }
+  return out as T;
+}
+
+async function getById<T>(
+  db: Firestore,
+  collectionName: string,
+  id: number
+): Promise<T | undefined> {
+  const snap = await db.collection(collectionName).doc(String(id)).get();
+  if (!snap.exists) return undefined;
+  return fromFirestore<T>(id, snap.data()!);
+}
+
+async function queryOne<T>(
+  db: Firestore,
+  collectionName: string,
+  field: string,
+  value: any
+): Promise<T | undefined> {
+  const snap = await db.collection(collectionName).where(field, "==", value).limit(1).get();
+  if (snap.empty) return undefined;
+  const doc = snap.docs[0];
+  return fromFirestore<T>(Number(doc.id), doc.data());
+}
+
+async function queryMany<T>(
+  db: Firestore,
+  collectionName: string,
+  filters: Array<[string, any]>,
+  orderByField?: string
+): Promise<T[]> {
+  let q: FirebaseFirestore.Query = db.collection(collectionName);
+  for (const [field, value] of filters) {
+    q = q.where(field, "==", value);
+  }
+  if (orderByField) q = q.orderBy(orderByField);
+  const snap = await q.get();
+  return snap.docs.map((doc) => fromFirestore<T>(Number(doc.id), doc.data()));
+}
+
+async function createDoc<T>(
+  db: Firestore,
+  collectionName: string,
+  data: Record<string, any>,
+  timestamps: { createdAt?: boolean; updatedAt?: boolean } = { createdAt: true }
+): Promise<T> {
+  const id = await nextId(db, collectionName);
+  const now = new Date();
+  const payload = clean({
+    ...data,
+    ...(timestamps.createdAt ? { createdAt: now } : {}),
+    ...(timestamps.updatedAt ? { updatedAt: now } : {}),
+  });
+  await db.collection(collectionName).doc(String(id)).set(payload);
+  return fromFirestore<T>(id, payload);
+}
+
+async function updateDoc(
+  db: Firestore,
+  collectionName: string,
+  id: number,
+  updates: Record<string, any>,
+  bumpUpdatedAt = true
+): Promise<void> {
+  const payload = clean({ ...updates, ...(bumpUpdatedAt ? { updatedAt: new Date() } : {}) });
+  if (Object.keys(payload).length === 0) return;
+  await db.collection(collectionName).doc(String(id)).set(payload, { merge: true });
+}
+
+// ---------------------------------------------------------------------------
+// Users
+// ---------------------------------------------------------------------------
+
+export interface InsertUserLike {
+  openId?: string | null;
+  email?: string | null;
+  name?: string | null;
+  loginMethod?: string | null;
+  role?: "user" | "admin";
+  lastSignedIn?: Date;
+  [key: string]: any;
+}
+
+const OWNER_OPEN_ID = process.env.OWNER_OPEN_ID;
+
+export async function upsertUser(user: InsertUserLike): Promise<void> {
+  if (!user.openId) {
+    throw new Error("User openId is required for upsert");
+  }
+
+  const db = await getDb();
+  if (!db) {
+    console.warn("[Firestore] Cannot upsert user: database not available");
+    return;
+  }
+
+  try {
+    const existing = await queryOne<{ id: number }>(db, "users", "openId", user.openId);
+
+    const updateSet: Record<string, any> = {};
+    (["name", "email", "loginMethod"] as const).forEach((field) => {
+      const value = (user as any)[field];
+      if (value !== undefined) updateSet[field] = value ?? null;
+    });
+
+    updateSet.lastSignedIn = user.lastSignedIn ?? new Date();
+
+    if (user.role !== undefined) {
+      updateSet.role = user.role;
+    } else if (user.openId === OWNER_OPEN_ID && !existing) {
+      updateSet.role = "admin";
+    }
+
+    if (existing) {
+      await updateDoc(db, "users", existing.id, updateSet, false);
+    } else {
+      await createDoc(db, "users", {
+        openId: user.openId,
+        role: "user",
+        subscriptionTier: "free",
+        emailVerified: false,
+        ...updateSet,
+      });
+    }
+  } catch (error) {
+    console.error("[Firestore] Failed to upsert user:", error);
+    throw error;
+  }
+}
+
+export async function getUserByOpenId(openId: string) {
+  const db = await getDb();
+  if (!db) {
+    console.warn("[Firestore] Cannot get user: database not available");
+    return undefined;
+  }
+  return await queryOne(db, "users", "openId", openId);
+}
+
+export async function getUserById(id: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  return await getById(db, "users", id);
+}
+
+// ---------------------------------------------------------------------------
+// Projects
+// ---------------------------------------------------------------------------
+
+export async function createProject(
+  userId: number,
+  name: string,
+  type: string,
+  description?: string
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return await createDoc(db, "projects", {
+    userId,
+    name,
+    type,
+    description: description ?? null,
+    isPublic: false,
+  });
+}
+
+export async function getUserProjects(userId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return await queryMany(db, "projects", [["userId", userId]], "createdAt");
+}
+
+export async function getProjectById(projectId: number, userId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const project = await getById<{ userId: number }>(db, "projects", projectId);
+  if (!project || project.userId !== userId) return undefined;
+  return project;
+}
+
+export async function updateProject(
+  projectId: number,
+  userId: number,
+  updates: Record<string, any>
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const existing = await getProjectById(projectId, userId);
+  if (!existing) return;
+  return await updateDoc(db, "projects", projectId, updates);
+}
+
+export async function deleteProject(projectId: number, userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const existing = await getProjectById(projectId, userId);
+  if (!existing) return;
+  await db.collection("projects").doc(String(projectId)).delete();
+}
+
+// ---------------------------------------------------------------------------
+// Chat Messages
+// ---------------------------------------------------------------------------
+
+export async function addChatMessage(
+  projectId: number,
+  userId: number,
+  role: "user" | "assistant",
+  content: string,
+  fileUrls?: string[]
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return await createDoc(
+    db,
+    "chatMessages",
+    { projectId, userId, role, content, fileUrls: fileUrls ?? null },
+    { createdAt: true }
+  );
+}
+
+export async function getChatMessages(projectId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return await queryMany(db, "chatMessages", [["projectId", projectId]], "createdAt");
+}
+
+// ---------------------------------------------------------------------------
+// Characters
+// ---------------------------------------------------------------------------
+
+export async function createCharacter(
+  userId: number,
+  name: string,
+  description?: string,
+  personality?: Record<string, any>
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return await createDoc(db, "characters", {
+    userId,
+    name,
+    description: description ?? null,
+    personality: personality ?? null,
+  });
+}
+
+export async function getUserCharacters(userId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return await queryMany(db, "characters", [["userId", userId]], "createdAt");
+}
+
+export async function getCharacterById(characterId: number, userId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const character = await getById<{ userId: number }>(db, "characters", characterId);
+  if (!character || character.userId !== userId) return undefined;
+  return character;
+}
+
+export async function updateCharacter(
+  characterId: number,
+  userId: number,
+  updates: Record<string, any>
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const existing = await getCharacterById(characterId, userId);
+  if (!existing) return;
+  return await updateDoc(db, "characters", characterId, updates);
+}
+
+export async function deleteCharacter(characterId: number, userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const existing = await getCharacterById(characterId, userId);
+  if (!existing) return;
+  await db.collection("characters").doc(String(characterId)).delete();
+}
+
+// ---------------------------------------------------------------------------
+// Files
+// ---------------------------------------------------------------------------
+
+export async function createFile(
+  userId: number,
+  filename: string,
+  fileKey: string,
+  url: string,
+  mimeType?: string,
+  size?: number,
+  projectId?: number
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return await createDoc(
+    db,
+    "files",
+    {
+      userId,
+      projectId: projectId ?? null,
+      filename,
+      fileKey,
+      url,
+      mimeType: mimeType ?? null,
+      size: size ?? null,
+    },
+    { createdAt: true }
+  );
+}
+
+export async function getUserFiles(userId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return await queryMany(db, "files", [["userId", userId]], "createdAt");
+}
+
+// ---------------------------------------------------------------------------
+// Subscriptions
+// ---------------------------------------------------------------------------
+
+export async function getOrCreateSubscription(userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const existing = await queryOne<{ id: number }>(db, "subscriptions", "userId", userId);
+  if (existing) return existing;
+
+  return await createDoc(db, "subscriptions", { userId, tier: "free", status: "active" });
+}
+
+export async function updateSubscription(userId: number, updates: Record<string, any>) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const existing = await queryOne<{ id: number }>(db, "subscriptions", "userId", userId);
+  if (!existing) return;
+  return await updateDoc(db, "subscriptions", existing.id, updates);
+}
+
+/** Used by stripe.ts in place of the raw inline drizzle queries it used to run. */
+export async function getSubscriptionByUserId(userId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  return await queryOne(db, "subscriptions", "userId", userId);
+}
+
+export async function getSubscriptionByStripeSubscriptionId(stripeSubscriptionId: string) {
+  const db = await getDb();
+  if (!db) return undefined;
+  return await queryOne<{ id: number }>(
+    db,
+    "subscriptions",
+    "stripeSubscriptionId",
+    stripeSubscriptionId
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Usage Tracking
+// ---------------------------------------------------------------------------
+
+export async function trackUsage(userId: number, feature: string, count: number = 1) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const now = new Date();
+  const month = now.getMonth() + 1;
+  const year = now.getFullYear();
+
+  const existing = await queryMany<{ id: number; count: number }>(db, "usage", [
+    ["userId", userId],
+    ["feature", feature],
+    ["month", month],
+    ["year", year],
+  ]);
+
+  if (existing.length > 0) {
+    return await updateDoc(
+      db,
+      "usage",
+      existing[0].id,
+      { count: existing[0].count + count },
+      false
+    );
+  }
+
+  return await createDoc(db, "usage", { userId, feature, count, month, year });
+}
+
+export async function getMonthlyUsage(userId: number, feature?: string) {
+  const db = await getDb();
+  if (!db) return [];
+
+  const now = new Date();
+  const month = now.getMonth() + 1;
+  const year = now.getFullYear();
+
+  const filters: Array<[string, any]> = [
+    ["userId", userId],
+    ["month", month],
+    ["year", year],
+  ];
+  if (feature) filters.push(["feature", feature]);
+
+  return await queryMany(db, "usage", filters);
+}
+
+// ---------------------------------------------------------------------------
+// Research Reports
+// ---------------------------------------------------------------------------
+
+export async function createResearchReport(
+  projectId: number,
+  userId: number,
+  title: string,
+  content: string,
+  sources?: any[],
+  citations?: any[]
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return await createDoc(db, "researchReports", {
+    projectId,
+    userId,
+    title,
+    content,
+    sources: sources ?? null,
+    citations: citations ?? null,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Music Projects
+// ---------------------------------------------------------------------------
+
+export async function createMusicProject(
+  projectId: number,
+  userId: number,
+  lyrics?: string,
+  structure?: any,
+  productionPrompt?: string
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return await createDoc(db, "musicProjects", {
+    projectId,
+    userId,
+    lyrics: lyrics ?? null,
+    structure: structure ?? null,
+    productionPrompt: productionPrompt ?? null,
+  });
+}
+
+export async function getMusicProject(projectId: number, userId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const results = await queryMany<{ userId: number }>(db, "musicProjects", [
+    ["projectId", projectId],
+    ["userId", userId],
+  ]);
+  return results[0];
+}
+
+// ---------------------------------------------------------------------------
+// Video Projects
+// ---------------------------------------------------------------------------
+
+export async function createVideoProject(
+  projectId: number,
+  userId: number,
+  musicProjectId?: number
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return await createDoc(db, "videoProjects", {
+    projectId,
+    userId,
+    musicProjectId: musicProjectId ?? null,
+    status: "pending",
+    progress: 0,
+  });
+}
+
+export async function getVideoProject(projectId: number, userId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const results = await queryMany<{ id: number }>(db, "videoProjects", [
+    ["projectId", projectId],
+    ["userId", userId],
+  ]);
+  return results[0];
+}
+
+export async function updateVideoProject(
+  projectId: number,
+  userId: number,
+  updates: Record<string, any>
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const existing = await getVideoProject(projectId, userId);
+  if (!existing) return;
+  return await updateDoc(db, "videoProjects", (existing as any).id, updates);
+}
+
+// ---------------------------------------------------------------------------
+// App Projects
+// ---------------------------------------------------------------------------
+
+export async function createAppProject(
+  projectId: number,
+  userId: number,
+  appType: "website" | "mobile" | "saas"
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return await createDoc(db, "appProjects", { projectId, userId, appType });
+}
+
+export async function getAppProject(projectId: number, userId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const results = await queryMany<{ id: number }>(db, "appProjects", [
+    ["projectId", projectId],
+    ["userId", userId],
+  ]);
+  return results[0];
+}
+
+export async function updateAppProject(
+  projectId: number,
+  userId: number,
+  updates: Record<string, any>
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const existing = await getAppProject(projectId, userId);
+  if (!existing) return;
+  return await updateDoc(db, "appProjects", (existing as any).id, updates);
+}
+
+// ---------------------------------------------------------------------------
+// Admin Functions
+// ---------------------------------------------------------------------------
+
+export async function getAllUsers() {
+  const db = await getDb();
+  if (!db) return [];
+  return await queryMany(db, "users", [], "createdAt");
+}
+
+export async function disableUser(userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const existing = await queryOne<{ id: number }>(db, "subscriptions", "userId", userId);
+  if (!existing) return;
+  return await updateDoc(db, "subscriptions", existing.id, { status: "canceled" });
+}
+
+export async function logAuditAction(
+  action: string,
+  userId?: number,
+  adminId?: number,
+  targetUserId?: number,
+  details?: Record<string, any>
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return await createDoc(db, "auditLogs", {
+    action,
+    userId: userId ?? null,
+    adminId: adminId ?? null,
+    targetUserId: targetUserId ?? null,
+    details: details ?? null,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Email/Password Authentication
+// ---------------------------------------------------------------------------
+
+export async function getUserByEmail(email: string) {
+  const db = await getDb();
+  if (!db) return undefined;
+  return await queryOne(db, "users", "email", email);
+}
+
+export async function createEmailUser(data: {
+  email: string;
+  name: string;
+  passwordHash: string;
+  emailVerificationToken: string;
+  emailVerificationExpires: Date;
+  loginMethod: string;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return await createDoc(db, "users", {
+    email: data.email,
+    name: data.name,
+    passwordHash: data.passwordHash,
+    emailVerificationToken: data.emailVerificationToken,
+    emailVerificationExpires: data.emailVerificationExpires,
+    loginMethod: data.loginMethod,
+    emailVerified: false,
+    role: "user",
+    subscriptionTier: "free",
+  });
+}
+
+export async function getUserByVerificationToken(token: string) {
+  const db = await getDb();
+  if (!db) return undefined;
+  return await queryOne(db, "users", "emailVerificationToken", token);
+}
+
+export async function verifyUserEmail(userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return await updateDoc(db, "users", userId, {
+    emailVerified: true,
+    emailVerificationToken: FieldValue.delete(),
+    emailVerificationExpires: FieldValue.delete(),
+  });
+}
+
+export async function setPasswordResetToken(userId: number, token: string, expiresAt: Date) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return await updateDoc(db, "users", userId, {
+    passwordResetToken: token,
+    passwordResetExpires: expiresAt,
+  });
+}
+
+export async function getUserByPasswordResetToken(token: string) {
+  const db = await getDb();
+  if (!db) return undefined;
+  return await queryOne(db, "users", "passwordResetToken", token);
+}
+
+export async function resetUserPassword(userId: number, newPasswordHash: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return await updateDoc(db, "users", userId, {
+    passwordHash: newPasswordHash,
+    passwordResetToken: FieldValue.delete(),
+    passwordResetExpires: FieldValue.delete(),
+  });
+}
