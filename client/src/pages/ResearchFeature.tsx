@@ -117,15 +117,10 @@ export default function ResearchFeature() {
 
             {searchMutation.data && (
               <div className="space-y-4 mt-6">
-                <h3 className="font-semibold">Search Results</h3>
-                {searchMutation.data.results.map((result, i) => (
-                  <div key={i} className="border rounded-lg p-4">
-                    <a href={result.url} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline font-semibold">
-                      {result.title}
-                    </a>
-                    <p className="text-sm text-muted-foreground mt-2">{result.snippet}</p>
-                  </div>
-                ))}
+                <h3 className="font-semibold">Answer</h3>
+                <div className="border rounded-lg p-4 whitespace-pre-wrap text-sm">
+                  {searchMutation.data.summary}
+                </div>
               </div>
             )}
           </CardContent>

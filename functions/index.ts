@@ -15,6 +15,7 @@ export const api = onRequest(
       "OPENAI_API_KEY",
       "E2B_API_KEY",
       "FAL_KEY",
+      "RESEND_API_KEY",
       "STRIPE_SECRET_KEY",
       "JWT_SECRET",
     ],

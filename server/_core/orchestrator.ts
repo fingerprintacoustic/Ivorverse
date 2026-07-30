@@ -38,7 +38,11 @@ export type OrchestratorResult = {
 
 const MODEL = "claude-sonnet-4-6";
 
-const TOOLS: Anthropic.Tool[] = [
+const TOOLS: Anthropic.ToolUnion[] = [
+  // Anthropic-hosted: executed server-side by the Anthropic API itself, no
+  // local handling needed in executeTool(). Replaces the old manual
+  // Google-search-via-Manus-Forge pipeline.
+  { type: "web_search_20250305", name: "web_search" },
   {
     name: "generate_image",
     description:
@@ -236,6 +240,14 @@ export async function runOrchestrator(
       messages,
       tools: TOOLS,
     });
+
+    // Server-executed tools (currently just web_search) resolve inline —
+    // they don't set stop_reason to "tool_use", so track them here too.
+    for (const block of response.content) {
+      if (block.type === "server_tool_use") {
+        toolsUsed.push(block.name);
+      }
+    }
 
     if (response.stop_reason !== "tool_use") {
       const textBlock = response.content.find((b) => b.type === "text");

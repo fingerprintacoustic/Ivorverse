@@ -5,7 +5,6 @@ import { publicProcedure, protectedProcedure, router, adminProcedure } from "./_
 import { z } from "zod";
 import * as db from "./db";
 import { invokeLLM } from "./_core/llm";
-import { webSearch, newsSearch, isCurrentInfoQuery, getCurrentContext, formatSearchResultsForLLM } from "./_core/webSearch";
 import { storagePut } from "./storage";
 import { generateImage } from "./_core/imageGeneration";
 import { transcribeAudio } from "./_core/voiceTranscription";
@@ -297,32 +296,18 @@ export const appRouter = router({
         })
       )
       .mutation(async ({ ctx, input }) => {
-        const { webSearch: performWebSearch, formatSearchResultsForLLM, isCurrentInfoQuery, getCurrentContext } = await import("./_core/webSearch");
-        
         // Save user message
         await db.addChatMessage(input.projectId, ctx.user.id, "user", input.message, input.fileUrls);
 
         // Track usage
         await db.trackUsage(ctx.user.id, "chat");
 
-        // Detect if web search is needed for current information
-        const needsWebSearch = input.searchWeb !== false && isCurrentInfoQuery(input.message);
-        
-        let searchContext = "";
-        if (needsWebSearch) {
-          try {
-            const { results } = await performWebSearch(input.message, { maxResults: 5 });
-            if (results.length > 0) {
-              searchContext = formatSearchResultsForLLM(results);
-            }
-          } catch (error) {
-            console.error("[Chat] Web search failed:", error);
-          }
-        }
+        const now = new Date();
+        const dateTimeContext = `Current date and time: ${now.toISOString()} (${now.toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })} at ${now.toLocaleTimeString("en-US")})`;
 
         const systemPrompt = `You are Ivor, the AI assistant for IvorVerse AI.
-${getCurrentContext()}
-${searchContext ? `\nCurrent information available:\n${searchContext}\nUse this information to provide accurate, up-to-date answers. Always cite your sources with URLs.` : "You have access to current information. Provide accurate, helpful responses."}`;
+${dateTimeContext}
+You have a web_search tool available — use it whenever the user asks about current events, prices, recent news, or anything time-sensitive. Always cite your sources with URLs when you use it.`;
 
         // Long-term memory for this project (facts worth remembering across messages)
         const memoryEntries = await db.getMemory(input.projectId);
@@ -351,16 +336,11 @@ ${searchContext ? `\nCurrent information available:\n${searchContext}\nUse this 
         );
 
         const assistantMessage = result.message;
-        
-        // Add source citations if web search was used
-        const finalMessage = needsWebSearch && searchContext 
-          ? `${assistantMessage}\n\n---\n**Sources:**\n${searchContext}`
-          : assistantMessage;
 
         // Save assistant message
-        await db.addChatMessage(input.projectId, ctx.user.id, "assistant", finalMessage);
+        await db.addChatMessage(input.projectId, ctx.user.id, "assistant", assistantMessage);
 
-        return { message: finalMessage, usedWebSearch: needsWebSearch };
+        return { message: assistantMessage, usedWebSearch: result.toolsUsed.includes("web_search") };
       }),
 
     getMessages: protectedProcedure
@@ -429,19 +409,15 @@ ${searchContext ? `\nCurrent information available:\n${searchContext}\nUse this 
     search: protectedProcedure
       .input(z.object({ query: z.string() }))
       .mutation(async ({ ctx, input }) => {
-        // This would integrate with a web search API
-        // For now, return a placeholder
+        const { runOrchestrator } = await import("./_core/orchestrator");
+        const result = await runOrchestrator(
+          "You are a research assistant. Use the web_search tool to answer the user's query with current, accurate information. Always cite sources with URLs.",
+          [{ role: "user", content: input.query }]
+        );
+
         await db.trackUsage(ctx.user.id, "research");
 
-        return {
-          results: [
-            {
-              title: "Search Result 1",
-              url: "https://example.com",
-              snippet: "Sample search result",
-            },
-          ],
-        };
+        return { summary: result.message };
       }),
 
     generateReport: protectedProcedure
@@ -453,20 +429,14 @@ ${searchContext ? `\nCurrent information available:\n${searchContext}\nUse this 
         })
       )
       .mutation(async ({ ctx, input }) => {
-        const response = await invokeLLM({
-          messages: [
-            {
-              role: "system",
-              content:
-                "You are a research expert. Generate a comprehensive research report with citations.",
-            },
-            { role: "user", content: `Research and report on: ${input.topic}` },
-          ],
-        });
+        const { runOrchestrator } = await import("./_core/orchestrator");
+        const result = await runOrchestrator(
+          "You are a research expert. Use the web_search tool to ground your report in " +
+            "current, real sources. Generate a comprehensive research report with inline citations and URLs.",
+          [{ role: "user", content: `Research and report on: ${input.topic}` }]
+        );
 
-        const reportContent = typeof response.choices[0].message.content === 'string' 
-          ? response.choices[0].message.content 
-          : JSON.stringify(response.choices[0].message.content);
+        const reportContent = result.message;
 
         await db.createResearchReport(
           input.projectId,

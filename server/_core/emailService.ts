@@ -1,12 +1,15 @@
 /**
- * Email Service for sending verification and password reset emails
- * Currently a stub - integrate with your preferred email provider:
- * - SendGrid
- * - Mailgun
- * - AWS SES
- * - Resend
- * - etc.
+ * Email Service for sending verification and password reset emails.
+ *
+ * REAL BUG FOUND AND FIXED: this was a stub that only logged to the
+ * console and always returned success — no email was ever actually sent.
+ * Since signup requires email verification before login (see
+ * authProcedures.ts), this meant no one could actually complete signup
+ * and log in in production, despite the auth test suite passing (those
+ * tests check the token-generation logic in isolation, not whether an
+ * email carrying that token ever reaches anyone).
  */
+import { Resend } from "resend";
 
 export interface EmailOptions {
   to: string;
@@ -15,15 +18,33 @@ export interface EmailOptions {
   text?: string;
 }
 
+let _resend: Resend | null = null;
+function getClient(): Resend {
+  if (!_resend) {
+    if (!process.env.RESEND_API_KEY) {
+      throw new Error("RESEND_API_KEY is not configured");
+    }
+    _resend = new Resend(process.env.RESEND_API_KEY);
+  }
+  return _resend;
+}
+
 export async function sendEmail(options: EmailOptions): Promise<boolean> {
   try {
-    // TODO: Implement actual email sending
-    // For now, just log to console
-    console.log(`[Email] Sending email to ${options.to}`);
-    console.log(`[Email] Subject: ${options.subject}`);
-    console.log(`[Email] HTML: ${options.html.substring(0, 100)}...`);
-    
-    // Placeholder: return success
+    const from = process.env.EMAIL_FROM || "IvorVerse AI <onboarding@resend.dev>";
+    const { error } = await getClient().emails.send({
+      from,
+      to: options.to,
+      subject: options.subject,
+      html: options.html,
+      text: options.text,
+    });
+
+    if (error) {
+      console.error("[Email] Resend error:", error);
+      return false;
+    }
+
     return true;
   } catch (error) {
     console.error("[Email] Failed to send email:", error);
