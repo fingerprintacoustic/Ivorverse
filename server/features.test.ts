@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
-import type { User } from "../drizzle/schema";
+import type { User } from "../db";
 
 // Mock user context
 const mockUser: User = {

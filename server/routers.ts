@@ -333,17 +333,14 @@ ${searchContext ? `\nCurrent information available:\n${searchContext}\nUse this 
           content: msg.content,
         }));
 
-        // Get LLM response with full conversation history
-        const response = await invokeLLM({
-          messages: [
-            { role: "system", content: systemPrompt + "\n\nIMPORTANT: Maintain context from the conversation history. Understand pronouns and references to previous messages." },
-            ...conversationHistory,
-          ],
-        });
+        // Get response from the Claude orchestrator (can call tools, e.g. image generation)
+        const { runOrchestrator } = await import("./_core/orchestrator");
+        const result = await runOrchestrator(
+          systemPrompt + "\n\nIMPORTANT: Maintain context from the conversation history. Understand pronouns and references to previous messages.",
+          conversationHistory
+        );
 
-        const assistantMessage = typeof response.choices[0].message.content === 'string'
-          ? response.choices[0].message.content
-          : JSON.stringify(response.choices[0].message.content);
+        const assistantMessage = result.message;
         
         // Add source citations if web search was used
         const finalMessage = needsWebSearch && searchContext 

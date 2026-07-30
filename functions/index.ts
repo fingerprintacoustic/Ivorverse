@@ -11,10 +11,10 @@ export const api = onRequest(
     memory: "512MiB",
     timeoutSeconds: 60,
     secrets: [
+      "ANTHROPIC_API_KEY",
+      "OPENAI_API_KEY",
       "STRIPE_SECRET_KEY",
       "JWT_SECRET",
-      "OAUTH_SERVER_URL",
-      "BUILT_IN_FORGE_API_KEY",
     ],
   },
   createApp()

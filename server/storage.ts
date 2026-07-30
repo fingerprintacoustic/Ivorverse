@@ -1,20 +1,38 @@
-// Preconfigured storage helpers for Manus WebDev templates
-// Uploads via Forge Server presigned URL to S3 (PUT direct).
-// Downloads return /manus-storage/{key} paths served via 307 redirect.
+/**
+ * Storage helpers backed by Firebase Cloud Storage.
+ *
+ * Replaces the original Manus Forge-proxied S3 storage (presigned PUT/GET
+ * through BUILT_IN_FORGE_API_URL). Same exported function names/signatures,
+ * so callers (imageGeneration.ts, routers.ts chat.uploadFile, etc.) don't
+ * need to change.
+ *
+ * Requires a Firebase Storage bucket on the same project as Firestore. Set
+ * FIREBASE_STORAGE_BUCKET (e.g. "your-project-id.appspot.com"), or it will
+ * fall back to the default bucket for the initialized Firebase app.
+ */
+import { getApps, initializeApp, applicationDefault, cert } from "firebase-admin/app";
+import { getStorage } from "firebase-admin/storage";
+import crypto from "crypto";
 
-import { ENV } from "./_core/env";
-
-function getForgeConfig() {
-  const forgeUrl = ENV.forgeApiUrl;
-  const forgeKey = ENV.forgeApiKey;
-
-  if (!forgeUrl || !forgeKey) {
-    throw new Error(
-      "Storage config missing: set BUILT_IN_FORGE_API_URL and BUILT_IN_FORGE_API_KEY",
-    );
+function ensureFirebaseApp() {
+  if (getApps().length === 0) {
+    if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+      initializeApp({
+        credential: cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON)),
+        storageBucket: process.env.FIREBASE_STORAGE_BUCKET,
+      });
+    } else {
+      initializeApp({
+        credential: applicationDefault(),
+        storageBucket: process.env.FIREBASE_STORAGE_BUCKET,
+      });
+    }
   }
+}
 
-  return { forgeUrl: forgeUrl.replace(/\/+$/, ""), forgeKey };
+function getBucket() {
+  ensureFirebaseApp();
+  return getStorage().bucket();
 }
 
 function normalizeKey(relKey: string): string {
@@ -31,67 +49,39 @@ function appendHashSuffix(relKey: string): string {
 export async function storagePut(
   relKey: string,
   data: Buffer | Uint8Array | string,
-  contentType = "application/octet-stream",
+  contentType = "application/octet-stream"
 ): Promise<{ key: string; url: string }> {
-  const { forgeUrl, forgeKey } = getForgeConfig();
+  const bucket = getBucket();
   const key = appendHashSuffix(normalizeKey(relKey));
+  const file = bucket.file(key);
 
-  // 1. Get presigned PUT URL from Forge
-  const presignUrl = new URL("v1/storage/presign/put", forgeUrl + "/");
-  presignUrl.searchParams.set("path", key);
+  const buffer = typeof data === "string" ? Buffer.from(data) : Buffer.from(data);
 
-  const presignResp = await fetch(presignUrl, {
-    headers: { Authorization: `Bearer ${forgeKey}` },
+  await file.save(buffer, {
+    contentType,
+    // Publicly readable via a long-lived signed URL rather than making the
+    // whole bucket public; callers get back a usable URL either way.
   });
 
-  if (!presignResp.ok) {
-    const msg = await presignResp.text().catch(() => presignResp.statusText);
-    throw new Error(`Storage presign failed (${presignResp.status}): ${msg}`);
-  }
-
-  const { url: s3Url } = (await presignResp.json()) as { url: string };
-  if (!s3Url) throw new Error("Forge returned empty presign URL");
-
-  // 2. PUT file directly to S3
-  const blob =
-    typeof data === "string"
-      ? new Blob([data], { type: contentType })
-      : new Blob([data as any], { type: contentType });
-
-  const uploadResp = await fetch(s3Url, {
-    method: "PUT",
-    headers: { "Content-Type": contentType },
-    body: blob,
-  });
-
-  if (!uploadResp.ok) {
-    throw new Error(`Storage upload to S3 failed (${uploadResp.status})`);
-  }
-
-  return { key, url: `/manus-storage/${key}` };
+  const url = await storageGetSignedUrl(key);
+  return { key, url };
 }
 
 export async function storageGet(relKey: string): Promise<{ key: string; url: string }> {
   const key = normalizeKey(relKey);
-  return { key, url: `/manus-storage/${key}` };
+  const url = await storageGetSignedUrl(key);
+  return { key, url };
 }
 
 export async function storageGetSignedUrl(relKey: string): Promise<string> {
-  const { forgeUrl, forgeKey } = getForgeConfig();
+  const bucket = getBucket();
   const key = normalizeKey(relKey);
-
-  const getUrl = new URL("v1/storage/presign/get", forgeUrl + "/");
-  getUrl.searchParams.set("path", key);
-
-  const resp = await fetch(getUrl, {
-    headers: { Authorization: `Bearer ${forgeKey}` },
+  const [url] = await bucket.file(key).getSignedUrl({
+    action: "read",
+    // Long-lived (7 days is the max for V4 signed URLs on GCS). For
+    // permanently public assets, consider making the bucket/file public
+    // instead and returning the plain https://storage.googleapis.com URL.
+    expires: Date.now() + 7 * 24 * 60 * 60 * 1000,
   });
-
-  if (!resp.ok) {
-    const msg = await resp.text().catch(() => resp.statusText);
-    throw new Error(`Storage signed URL failed (${resp.status}): ${msg}`);
-  }
-
-  const { url } = (await resp.json()) as { url: string };
   return url;
 }
