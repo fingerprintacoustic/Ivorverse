@@ -324,6 +324,15 @@ export const appRouter = router({
 ${getCurrentContext()}
 ${searchContext ? `\nCurrent information available:\n${searchContext}\nUse this information to provide accurate, up-to-date answers. Always cite your sources with URLs.` : "You have access to current information. Provide accurate, helpful responses."}`;
 
+        // Long-term memory for this project (facts worth remembering across messages)
+        const memoryEntries = await db.getMemory(input.projectId);
+        const memoryContext =
+          memoryEntries.length > 0
+            ? `\n\nThings to remember about this project:\n${memoryEntries
+                .map((m) => `- ${m.key}: ${m.value}`)
+                .join("\n")}`
+            : "";
+
         // Retrieve full conversation history for context
         const allMessages = await db.getChatMessages(input.projectId);
         
@@ -336,8 +345,9 @@ ${searchContext ? `\nCurrent information available:\n${searchContext}\nUse this 
         // Get response from the Claude orchestrator (can call tools, e.g. image generation)
         const { runOrchestrator } = await import("./_core/orchestrator");
         const result = await runOrchestrator(
-          systemPrompt + "\n\nIMPORTANT: Maintain context from the conversation history. Understand pronouns and references to previous messages.",
-          conversationHistory
+          systemPrompt + memoryContext + "\n\nIMPORTANT: Maintain context from the conversation history. Understand pronouns and references to previous messages.",
+          conversationHistory,
+          input.projectId
         );
 
         const assistantMessage = result.message;
@@ -695,6 +705,119 @@ ${searchContext ? `\nCurrent information available:\n${searchContext}\nUse this 
     getUsageStats: adminProcedure.query(async () => {
       // This would aggregate usage data
       return { totalUsers: 0, totalUsage: 0 };
+    }),
+  }),
+
+  // Ported from "AI OS & Autonomous Business Platform"
+  agents: router({
+    create: protectedProcedure
+      .input(
+        z.object({
+          name: z.string(),
+          description: z.string().optional(),
+          capabilities: z.any().optional(),
+        })
+      )
+      .mutation(async ({ input, ctx }) => {
+        const result = await db.createAgent(
+          ctx.user.id,
+          input.name,
+          input.description,
+          input.capabilities
+        );
+        await db.logAuditAction("create_agent", ctx.user.id);
+        return result;
+      }),
+
+    list: protectedProcedure.query(async ({ ctx }) => {
+      return await db.getAgents(ctx.user.id);
+    }),
+
+    createTask: protectedProcedure
+      .input(
+        z.object({
+          title: z.string(),
+          description: z.string().optional(),
+          agentId: z.number().optional(),
+        })
+      )
+      .mutation(async ({ input, ctx }) => {
+        const result = await db.createTask(
+          ctx.user.id,
+          input.title,
+          input.description,
+          input.agentId
+        );
+        await db.trackUsage(ctx.user.id, "task_created");
+        return result;
+      }),
+
+    listTasks: protectedProcedure.query(async ({ ctx }) => {
+      return await db.getTasks(ctx.user.id);
+    }),
+
+    updateTaskStatus: protectedProcedure
+      .input(
+        z.object({
+          taskId: z.number(),
+          status: z.enum(["pending", "in_progress", "completed", "failed"]),
+          progress: z.number().optional(),
+        })
+      )
+      .mutation(async ({ input }) => {
+        return await db.updateTaskStatus(input.taskId, input.status, input.progress ?? 0);
+      }),
+  }),
+
+  workflows: router({
+    create: protectedProcedure
+      .input(
+        z.object({
+          name: z.string(),
+          definition: z.string(),
+          description: z.string().optional(),
+        })
+      )
+      .mutation(async ({ input, ctx }) => {
+        const result = await db.createWorkflow(
+          ctx.user.id,
+          input.name,
+          input.definition,
+          input.description
+        );
+        await db.logAuditAction("create_workflow", ctx.user.id);
+        return result;
+      }),
+
+    list: protectedProcedure.query(async ({ ctx }) => {
+      return await db.getWorkflows(ctx.user.id);
+    }),
+  }),
+
+  monetization: router({
+    createProduct: protectedProcedure
+      .input(
+        z.object({
+          name: z.string(),
+          type: z.enum(["digital", "subscription", "course", "ebook", "saas"]),
+          price: z.number().optional(),
+          description: z.string().optional(),
+        })
+      )
+      .mutation(async ({ input, ctx }) => {
+        const result = await db.createProduct(
+          ctx.user.id,
+          input.name,
+          input.type,
+          input.price,
+          input.description
+        );
+        await db.logAuditAction("create_product", ctx.user.id);
+        return result;
+      }),
+
+    listProducts: protectedProcedure.query(async ({ ctx }) => {
+      return await db.getProducts(ctx.user.id);
     }),
   }),
 });

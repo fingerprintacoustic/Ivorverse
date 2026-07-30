@@ -183,6 +183,61 @@ export interface AuditLog {
   createdAt: Date;
 }
 
+// Ported from the "AI OS & Autonomous Business Platform" project.
+
+export interface Agent {
+  id: number;
+  userId: number;
+  name: string;
+  description: string | null;
+  capabilities: any;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface AgentTask {
+  id: number;
+  userId: number;
+  agentId: number | null;
+  title: string;
+  description: string | null;
+  status: "pending" | "in_progress" | "completed" | "failed";
+  progress: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface Workflow {
+  id: number;
+  userId: number;
+  name: string;
+  description: string | null;
+  definition: string; // JSON-encoded workflow definition
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface Product {
+  id: number;
+  userId: number;
+  name: string;
+  type: "digital" | "subscription" | "course" | "ebook" | "saas";
+  description: string | null;
+  price: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface ProjectMemory {
+  id: number;
+  projectId: number;
+  key: string;
+  value: string;
+  importance: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 // ---------------------------------------------------------------------------
 // App / Firestore initialization
 // ---------------------------------------------------------------------------
@@ -906,4 +961,157 @@ export async function resetUserPassword(userId: number, newPasswordHash: string)
     passwordResetToken: FieldValue.delete(),
     passwordResetExpires: FieldValue.delete(),
   });
+}
+
+// ---------------------------------------------------------------------------
+// Agents & Tasks (ported from "AI OS & Autonomous Business Platform")
+// ---------------------------------------------------------------------------
+
+export async function createAgent(
+  userId: number,
+  name: string,
+  description?: string,
+  capabilities?: any
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return await createDoc<Agent>(db, "agents", {
+    userId,
+    name,
+    description: description ?? null,
+    capabilities: capabilities ?? null,
+  });
+}
+
+export async function getAgents(userId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return await queryMany<Agent>(db, "agents", [["userId", userId]], "createdAt");
+}
+
+export async function createTask(
+  userId: number,
+  title: string,
+  description?: string,
+  agentId?: number
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return await createDoc<AgentTask>(db, "agentTasks", {
+    userId,
+    agentId: agentId ?? null,
+    title,
+    description: description ?? null,
+    status: "pending",
+    progress: 0,
+  });
+}
+
+export async function getTasks(userId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return await queryMany<AgentTask>(db, "agentTasks", [["userId", userId]], "createdAt");
+}
+
+export async function updateTaskStatus(
+  taskId: number,
+  status: AgentTask["status"],
+  progress: number = 0
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return await updateDoc(db, "agentTasks", taskId, { status, progress });
+}
+
+// ---------------------------------------------------------------------------
+// Workflows
+// ---------------------------------------------------------------------------
+
+export async function createWorkflow(
+  userId: number,
+  name: string,
+  definition: string,
+  description?: string
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return await createDoc<Workflow>(db, "workflows", {
+    userId,
+    name,
+    definition,
+    description: description ?? null,
+  });
+}
+
+export async function getWorkflows(userId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return await queryMany<Workflow>(db, "workflows", [["userId", userId]], "createdAt");
+}
+
+// ---------------------------------------------------------------------------
+// Products (monetization)
+// ---------------------------------------------------------------------------
+
+export async function createProduct(
+  userId: number,
+  name: string,
+  type: Product["type"],
+  price?: number,
+  description?: string
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return await createDoc<Product>(db, "products", {
+    userId,
+    name,
+    type,
+    price: price ?? null,
+    description: description ?? null,
+  });
+}
+
+export async function getProducts(userId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return await queryMany<Product>(db, "products", [["userId", userId]], "createdAt");
+}
+
+// ---------------------------------------------------------------------------
+// Project memory (long-term key/value memory, ported from conversationMemory
+// — adapted to IvorVerse's project-based chat model instead of a separate
+// conversation entity)
+// ---------------------------------------------------------------------------
+
+export async function setMemory(
+  projectId: number,
+  key: string,
+  value: string,
+  importance: number = 1
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const existing = await queryMany<ProjectMemory>(db, "projectMemory", [
+    ["projectId", projectId],
+    ["key", key],
+  ]);
+
+  if (existing.length > 0) {
+    await updateDoc(db, "projectMemory", existing[0].id, { value, importance });
+    return;
+  }
+
+  return await createDoc<ProjectMemory>(db, "projectMemory", {
+    projectId,
+    key,
+    value,
+    importance,
+  });
+}
+
+export async function getMemory(projectId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return await queryMany<ProjectMemory>(db, "projectMemory", [["projectId", projectId]]);
 }

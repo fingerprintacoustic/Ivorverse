@@ -12,6 +12,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { generateImage } from "./imageGeneration";
 import { buildApp } from "./appBuilder";
+import { setMemory } from "../db";
 
 let _client: Anthropic | null = null;
 function getClient(): Anthropic {
@@ -97,9 +98,33 @@ const TOOLS: Anthropic.Tool[] = [
       required: ["files", "startCommand", "port"],
     },
   },
+  {
+    name: "remember_fact",
+    description:
+      "Store a fact worth remembering across future messages in this project " +
+      "(e.g. a preference, decision, or detail the user shared). Use this when " +
+      "the user shares something durable that would help in later conversations " +
+      "— not for routine chat content.",
+    input_schema: {
+      type: "object",
+      properties: {
+        key: { type: "string", description: "A short label for this fact, e.g. 'preferred_tech_stack'." },
+        value: { type: "string", description: "The fact to remember." },
+        importance: {
+          type: "number",
+          description: "1-5, how important this is to keep surfacing. Defaults to 1.",
+        },
+      },
+      required: ["key", "value"],
+    },
+  },
 ];
 
-async function executeTool(name: string, input: Record<string, any>): Promise<string> {
+async function executeTool(
+  name: string,
+  input: Record<string, any>,
+  projectId: number | undefined
+): Promise<string> {
   switch (name) {
     case "generate_image": {
       const { url } = await generateImage({ prompt: input.prompt });
@@ -125,6 +150,13 @@ async function executeTool(name: string, input: Record<string, any>): Promise<st
         });
       }
     }
+    case "remember_fact": {
+      if (!projectId) {
+        return JSON.stringify({ error: "No project context to store this memory against." });
+      }
+      await setMemory(projectId, input.key, input.value, input.importance ?? 1);
+      return JSON.stringify({ remembered: true });
+    }
     default:
       return JSON.stringify({ error: `Unknown tool: ${name}` });
   }
@@ -137,7 +169,8 @@ async function executeTool(name: string, input: Record<string, any>): Promise<st
  */
 export async function runOrchestrator(
   systemPrompt: string,
-  history: OrchestratorMessage[]
+  history: OrchestratorMessage[],
+  projectId?: number
 ): Promise<OrchestratorResult> {
   const client = getClient();
   const toolsUsed: string[] = [];
@@ -172,7 +205,7 @@ export async function runOrchestrator(
     for (const block of response.content) {
       if (block.type === "tool_use") {
         toolsUsed.push(block.name);
-        const result = await executeTool(block.name, block.input as Record<string, any>);
+        const result = await executeTool(block.name, block.input as Record<string, any>, projectId);
         toolResults.push({
           type: "tool_result",
           tool_use_id: block.id,
