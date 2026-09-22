@@ -61,6 +61,7 @@
     "e2b": "^2.36.1",
     "embla-carousel-react": "^8.6.0",
     "express": "^4.21.2",
+    "fflate": "^0.8.3",
     "firebase-admin": "^14.2.0",
     "firebase-functions": "^7.3.2",
     "framer-motion": "^12.23.22",

@@ -32,7 +32,8 @@ export type BuildAppResult = {
   installLog: string;
 };
 
-const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
+/** How long a build sandbox (and so its preview URL) stays alive. */
+export const SANDBOX_TIMEOUT_MS = 10 * 60 * 1000;
 const SERVER_BOOT_WAIT_MS = 3000;
 
 export async function buildApp(options: BuildAppOptions): Promise<BuildAppResult> {
@@ -41,7 +42,7 @@ export async function buildApp(options: BuildAppOptions): Promise<BuildAppResult
   }
 
   const sandbox = await Sandbox.create({
-    timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    timeoutMs: options.timeoutMs ?? SANDBOX_TIMEOUT_MS,
   });
 
   try {

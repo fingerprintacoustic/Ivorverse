@@ -8,7 +8,9 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { trpc } from "@/lib/trpc";
 import { Plus, Film, Loader2, Music, Image as ImageIcon, Zap } from "lucide-react";
-import { useState } from "react";
+import { Progress } from "@/components/ui/progress";
+import { useJob } from "@/hooks/useJob";
+import { useEffect, useState } from "react";
 
 export default function VideoFeature() {
   const [projectName, setProjectName] = useState("");
@@ -20,6 +22,8 @@ export default function VideoFeature() {
   const [audioUrl, setAudioUrl] = useState("");
   const [lyrics, setLyrics] = useState("");
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [assembleJobId, setAssembleJobId] = useState<number | null>(null);
+  const assembleJob = useJob(assembleJobId);
 
   const { data: projects, refetch } = trpc.projects.list.useQuery();
   const createProjectMutation = trpc.projects.create.useMutation({
@@ -44,11 +48,19 @@ export default function VideoFeature() {
     },
   });
 
+  // Rendering runs as a background job; the mutation only queues it
   const assembleMutation = trpc.video.assemble.useMutation({
     onSuccess: (data) => {
-      setVideoUrl(data.videoUrl);
+      setVideoUrl(null);
+      setAssembleJobId(data.jobId);
     },
   });
+  const isAssembling = assembleMutation.isPending || assembleJob.isActive;
+
+  useEffect(() => {
+    const url = assembleJob.job?.result?.videoUrl;
+    if (assembleJob.isCompleted && typeof url === "string") setVideoUrl(url);
+  }, [assembleJob.isCompleted, assembleJob.job?.result?.videoUrl]);
 
   const videoProjects = projects?.filter((p) => p.type === "video") || [];
   const currentProjectId = videoProjects[0]?.id;
@@ -371,10 +383,10 @@ export default function VideoFeature() {
                     )}
                     <Button
                       onClick={handleAssemble}
-                      disabled={assembleMutation.isPending || !audioUrl.trim() || sceneImageUrls.length === 0}
+                      disabled={isAssembling || !audioUrl.trim() || sceneImageUrls.length === 0}
                       className="w-full"
                     >
-                      {assembleMutation.isPending ? (
+                      {isAssembling ? (
                         <>
                           <Loader2 className="w-4 h-4 mr-2 animate-spin" />
                           Assembling video (this can take several minutes)...
@@ -383,6 +395,17 @@ export default function VideoFeature() {
                         "Assemble Video"
                       )}
                     </Button>
+                    {assembleJob.isActive && (
+                      <div className="space-y-2">
+                        <Progress value={assembleJob.job?.progress ?? 0} />
+                        <p className="text-sm text-muted-foreground">{assembleJob.job?.stage ?? "Queued"}…</p>
+                      </div>
+                    )}
+                    {(assembleJob.isFailed || assembleMutation.error) && (
+                      <p className="text-sm text-destructive">
+                        Video assembly failed: {assembleJob.error ?? assembleMutation.error?.message}
+                      </p>
+                    )}
                     {videoUrl && (
                       <div className="flex gap-2">
                         <Button asChild variant="outline" className="flex-1">

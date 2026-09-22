@@ -11,6 +11,8 @@ import { generateImage } from "./_core/imageGeneration";
 import { transcribeAudio } from "./_core/voiceTranscription";
 import { generateSpeech, TTS_MAX_CHARS, TTS_VOICES } from "./_core/textToSpeech";
 import { processVoiceTurn } from "./_core/voiceConversation";
+import { enqueueJob } from "./_core/jobs";
+import { AppTypeSchema } from "./_core/appGeneration";
 import { stripeRouter } from "./stripe";
 import { TRPCError } from "@trpc/server";
 import { checkRateLimit, getRateLimitKey, AUTH_RATE_LIMITS } from "./_core/rateLimiter";
@@ -638,11 +640,13 @@ You have a web_search tool available — use it whenever the user asks about cur
         return { imageUrls };
       }),
 
+    // Rendering takes minutes, so it runs as a background job; the client
+    // polls jobs.get with the returned jobId.
     assemble: protectedProcedure
       .input(
         z.object({
           projectId: z.number(),
-          audioUrl: z.string(),
+          audioUrl: z.string().url(),
           lyrics: z.string().optional(),
         })
       )
@@ -650,42 +654,10 @@ You have a web_search tool available — use it whenever the user asks about cur
         const videoProject = await db.getVideoProject(input.projectId, ctx.user.id);
         const imageUrls: string[] = Array.isArray(videoProject?.imageUrls) ? videoProject.imageUrls : [];
         if (imageUrls.length === 0) {
-          throw new Error("Generate scene images before assembling the video.");
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Generate scene images before assembling the video." });
         }
-
-        await db.updateVideoProject(input.projectId, ctx.user.id, { status: "processing", progress: 10 });
-
-        try {
-          const { generateMusicVideo } = await import("./_core/videoGeneration");
-          const { videoUrl, durationSeconds } = await generateMusicVideo({
-            audioUrl: input.audioUrl,
-            sceneImageUrls: imageUrls,
-            lyrics: input.lyrics,
-          });
-
-          await db.updateVideoProject(input.projectId, ctx.user.id, {
-            videoUrl,
-            status: "completed",
-            progress: 100,
-          });
-
-          await db.createFile(
-            ctx.user.id,
-            `music-video-${Date.now()}.mp4`,
-            `videos/${ctx.user.id}/${Date.now()}`,
-            videoUrl,
-            "video/mp4",
-            undefined,
-            input.projectId
-          );
-
-          await db.trackUsage(ctx.user.id, "video_assembly");
-
-          return { videoUrl, durationSeconds };
-        } catch (error) {
-          await db.updateVideoProject(input.projectId, ctx.user.id, { status: "failed", progress: 0 });
-          throw error;
-        }
+        const job = await enqueueJob("video_assemble", ctx.user.id, input);
+        return { jobId: job.id };
       }),
 
     getProject: protectedProcedure
@@ -844,6 +816,60 @@ You have a web_search tool available — use it whenever the user asks about cur
             message: error instanceof Error ? error.message : "Voice conversation failed",
           });
         }
+      }),
+  }),
+
+  jobs: router({
+    get: protectedProcedure
+      .input(z.object({ jobId: z.number() }))
+      .query(async ({ ctx, input }) => {
+        const job = await db.getJob(input.jobId);
+        if (!job || job.userId !== ctx.user.id) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Job not found" });
+        }
+        const { input: _input, ...rest } = job;
+        return rest;
+      }),
+  }),
+
+  // App Builder: generation + sandbox build run as a background job
+  appBuilder: router({
+    generate: protectedProcedure
+      .input(
+        z.object({
+          projectId: z.number(),
+          appType: AppTypeSchema,
+          description: z.string().trim().min(10).max(8000),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const project = await db.getProjectById(input.projectId, ctx.user.id);
+        if (!project) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found" });
+        const job = await enqueueJob("app_build", ctx.user.id, input);
+        return { jobId: job.id };
+      }),
+
+    // The last saved build for a project (so results survive a page reload)
+    get: protectedProcedure
+      .input(z.object({ projectId: z.number() }))
+      .query(async ({ ctx, input }) => {
+        const app = await db.getAppProject(input.projectId, ctx.user.id);
+        if (!app || !app.sourceCode) return null;
+        let files: Array<{ path: string; content: string }> = [];
+        try {
+          files = JSON.parse(app.sourceCode);
+        } catch {
+          // Pre-job records stored free-form text here
+          files = [{ path: "README.md", content: app.sourceCode }];
+        }
+        return {
+          appType: app.appType,
+          requirements: app.requirements,
+          design: app.design,
+          files,
+          previewUrl: app.sourceCodeUrl,
+          updatedAt: app.updatedAt,
+        };
       }),
   }),
 

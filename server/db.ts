@@ -173,6 +173,20 @@ export interface AppProject {
   updatedAt: Date;
 }
 
+export interface Job {
+  id: number;
+  userId: number;
+  type: string;
+  status: "queued" | "running" | "completed" | "failed";
+  progress: number; // 0–100
+  stage: string; // human-readable current step
+  input: Record<string, any>;
+  result?: Record<string, any> | null;
+  error?: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export interface AuditLog {
   id: number;
   userId: number | null;
@@ -850,6 +864,50 @@ export async function updateAppProject(
   const existing = await getAppProject(projectId, userId);
   if (!existing) return;
   return await updateDoc(db, "appProjects", (existing as any).id, updates);
+}
+
+// ---------------------------------------------------------------------------
+// Background Jobs (see server/_core/jobs.ts)
+// ---------------------------------------------------------------------------
+
+export async function createJob(userId: number, type: string, input: Record<string, any>) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return await createDoc<Job>(
+    db,
+    "jobs",
+    { userId, type, input, status: "queued", progress: 0, stage: "Queued" },
+    { createdAt: true, updatedAt: true }
+  );
+}
+
+export async function getJob(jobId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  return await getById<Job>(db, "jobs", jobId);
+}
+
+export async function updateJob(jobId: number, updates: Partial<Omit<Job, "id">>) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await updateDoc(db, "jobs", jobId, updates);
+}
+
+/**
+ * Atomically move a job from queued → running. Returns false if it was
+ * already claimed — Firestore triggers deliver at-least-once, so a job
+ * can be handed to the worker more than once.
+ */
+export async function claimJob(jobId: number): Promise<boolean> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const ref = db.collection("jobs").doc(String(jobId));
+  return await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists || snap.data()!.status !== "queued") return false;
+    tx.update(ref, { status: "running", stage: "Starting", updatedAt: new Date() });
+    return true;
+  });
 }
 
 // ---------------------------------------------------------------------------

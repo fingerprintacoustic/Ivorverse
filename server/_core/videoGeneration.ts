@@ -19,16 +19,20 @@
  */
 import { Sandbox } from "e2b";
 import { storagePut } from "../storage";
+import * as db from "../db";
+import type { JobContext } from "./jobs";
 
 export type GenerateMusicVideoOptions = {
   audioUrl: string;
   sceneImageUrls: string[]; // at least 1
   lyrics?: string; // used to generate burned-in subtitles if provided
   timeoutMs?: number;
+  onStage?: (progress: number, stage: string) => Promise<void>;
 };
 
 export type GenerateMusicVideoResult = {
   videoUrl: string;
+  videoKey: string;
   durationSeconds: number;
 };
 
@@ -84,7 +88,10 @@ export async function generateMusicVideo(
     timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
   });
 
+  const stage = options.onStage ?? (async () => {});
+
   try {
+    await stage(10, "Installing video tools");
     // ffmpeg isn't in the base template — install it.
     const install = await sandbox.commands.run(
       "apt-get update -qq && apt-get install -y -qq ffmpeg"
@@ -93,6 +100,7 @@ export async function generateMusicVideo(
       throw new Error(`Failed to install ffmpeg:\n${install.stderr}`);
     }
 
+    await stage(25, "Downloading song and scene images");
     // Download audio and images into the sandbox.
     const audioBytes = await fetchBytes(options.audioUrl);
     await sandbox.files.write("/video/audio.input", audioBytes);
@@ -139,20 +147,75 @@ export async function generateMusicVideo(
     const ffmpegScript = `ffmpeg -y ${inputs} -i /video/audio.input -filter_complex "${filterComplex}" -map "[vout]" -map ${n}:a -c:v libx264 -c:a aac -shortest /video/output.mp4`;
     await sandbox.files.write("/video/render.sh", ffmpegScript);
 
+    await stage(40, "Rendering video");
     const render = await sandbox.commands.run("bash /video/render.sh");
     if (render.exitCode !== 0) {
       throw new Error(`Video rendering failed:\n${render.stderr.slice(-4000)}`);
     }
 
+    await stage(90, "Uploading video");
     const outputBytes = await sandbox.files.read("/video/output.mp4", { format: "bytes" });
-    const { url } = await storagePut(
+    const { url, key } = await storagePut(
       `videos/${Date.now()}.mp4`,
       Buffer.from(outputBytes),
       "video/mp4"
     );
 
-    return { videoUrl: url, durationSeconds };
+    return { videoUrl: url, videoKey: key, durationSeconds };
   } finally {
     await sandbox.kill().catch(() => {});
+  }
+}
+
+/**
+ * Background-job entry point (see jobs.ts). Rendering takes minutes, far
+ * longer than the 60s a request through Firebase Hosting is allowed.
+ */
+export async function runVideoAssembleJob(
+  input: { projectId: number; audioUrl: string; lyrics?: string },
+  ctx: JobContext
+) {
+  const videoProject = await db.getVideoProject(input.projectId, ctx.userId);
+  const imageUrls: string[] = Array.isArray(videoProject?.imageUrls) ? videoProject.imageUrls : [];
+  if (imageUrls.length === 0) {
+    throw new Error("Generate scene images before assembling the video.");
+  }
+
+  await db.updateVideoProject(input.projectId, ctx.userId, { status: "processing", progress: 5 });
+
+  try {
+    const { videoUrl, videoKey, durationSeconds } = await generateMusicVideo({
+      audioUrl: input.audioUrl,
+      sceneImageUrls: imageUrls,
+      lyrics: input.lyrics,
+      // Leave headroom under the 540s job-worker limit so failures are reported
+      timeoutMs: 8 * 60 * 1000,
+      onStage: async (progress, stage) => {
+        await ctx.report(progress, stage);
+        await db.updateVideoProject(input.projectId, ctx.userId, { progress });
+      },
+    });
+
+    await db.updateVideoProject(input.projectId, ctx.userId, {
+      videoUrl,
+      videoKey,
+      status: "completed",
+      progress: 100,
+    });
+    await db.createFile(
+      ctx.userId,
+      `music-video-${Date.now()}.mp4`,
+      videoKey,
+      videoUrl,
+      "video/mp4",
+      undefined,
+      input.projectId
+    );
+    await db.trackUsage(ctx.userId, "video_assembly");
+
+    return { videoUrl, durationSeconds };
+  } catch (error) {
+    await db.updateVideoProject(input.projectId, ctx.userId, { status: "failed", progress: 0 });
+    throw error;
   }
 }
