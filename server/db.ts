@@ -219,6 +219,12 @@ export interface AgentTask {
   description: string | null;
   status: "pending" | "in_progress" | "completed" | "failed";
   progress: number;
+  /** Markdown report produced by the agent run (see agentRunner.ts) */
+  result?: string | null;
+  error?: string | null;
+  /** Background job currently/last running this task */
+  jobId?: number | null;
+  completedAt?: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -1142,6 +1148,32 @@ export async function createTask(
     status: "pending",
     progress: 0,
   });
+}
+
+export async function getTaskById(taskId: number, userId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const task = await getById<AgentTask>(db, "agentTasks", taskId);
+  if (!task || task.userId !== userId) return undefined;
+  return task;
+}
+
+export async function getAgentById(agentId: number, userId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const agent = await getById<Agent>(db, "agents", agentId);
+  if (!agent || agent.userId !== userId) return undefined;
+  return agent;
+}
+
+/** Update a task's run fields. Caller must have verified ownership. */
+export async function updateTask(
+  taskId: number,
+  updates: Partial<Pick<AgentTask, "status" | "progress" | "result" | "error" | "jobId" | "completedAt">>
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await updateDoc(db, "agentTasks", taskId, updates);
 }
 
 export async function getTasks(userId: number) {

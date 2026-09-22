@@ -13,6 +13,7 @@ import { generateSpeech, TTS_MAX_CHARS, TTS_VOICES } from "./_core/textToSpeech"
 import { processVoiceTurn } from "./_core/voiceConversation";
 import { enqueueJob } from "./_core/jobs";
 import { AppTypeSchema } from "./_core/appGeneration";
+import { AGENT_TOOLS, DEFAULT_AGENT_TOOLS } from "./_core/agentRunner";
 import { stripeRouter } from "./stripe";
 import { TRPCError } from "@trpc/server";
 import { checkRateLimit, getRateLimitKey, AUTH_RATE_LIMITS } from "./_core/rateLimiter";
@@ -1031,9 +1032,11 @@ You have a web_search tool available — use it whenever the user asks about cur
     create: protectedProcedure
       .input(
         z.object({
-          name: z.string(),
-          description: z.string().optional(),
-          capabilities: z.any().optional(),
+          name: z.string().trim().min(1).max(100),
+          // The agent's standing instructions
+          description: z.string().max(4000).optional(),
+          // Tools the agent may use when running tasks
+          capabilities: z.array(z.enum(AGENT_TOOLS)).default(DEFAULT_AGENT_TOOLS),
         })
       )
       .mutation(async ({ input, ctx }) => {
@@ -1079,6 +1082,27 @@ You have a web_search tool available — use it whenever the user asks about cur
     listTasks: protectedProcedure.query(async ({ ctx }) => {
       return await db.getTasks(ctx.user.id);
     }),
+
+    // Have the task's agent actually do the work (background job — see
+    // agentRunner.ts); progress and the final report land on the task.
+    runTask: protectedProcedure
+      .input(z.object({ taskId: z.number() }))
+      .mutation(async ({ input, ctx }) => {
+        const task = await db.getTaskById(input.taskId, ctx.user.id);
+        if (!task) throw new TRPCError({ code: "NOT_FOUND", message: "Task not found" });
+        if (task.status === "in_progress" && task.jobId) {
+          // Allow a re-run if the previous job ended or its worker died
+          // (e.g. killed at the 540s limit) without updating the task.
+          const job = await db.getJob(task.jobId);
+          const stale = !job || Date.now() - new Date(job.updatedAt).getTime() > 10 * 60 * 1000;
+          if (job && (job.status === "queued" || job.status === "running") && !stale) {
+            throw new TRPCError({ code: "CONFLICT", message: "This task is already running" });
+          }
+        }
+        const job = await enqueueJob("agent_task", ctx.user.id, { taskId: task.id });
+        await db.updateTask(task.id, { status: "in_progress", progress: 0, jobId: job.id, error: null });
+        return { jobId: job.id };
+      }),
 
     updateTaskStatus: protectedProcedure
       .input(

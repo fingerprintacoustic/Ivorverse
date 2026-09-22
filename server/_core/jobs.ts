@@ -29,6 +29,7 @@ const HANDLERS: Record<string, () => Promise<JobHandler>> = {
   app_build: async () => (await import("./appGeneration")).runAppBuildJob,
   video_assemble: async () => (await import("./videoGeneration")).runVideoAssembleJob,
   music_generate: async () => (await import("./musicGeneration")).runMusicGenerateJob,
+  agent_task: async () => (await import("./agentRunner")).runAgentTaskJob,
 };
 
 export type JobType = keyof typeof HANDLERS;
