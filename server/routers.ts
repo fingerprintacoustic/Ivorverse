@@ -1,4 +1,5 @@
 import { COOKIE_NAME } from "@shared/const";
+import { getAppUrl } from "./_core/appUrl";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, protectedProcedure, router, adminProcedure } from "./_core/trpc";
@@ -79,7 +80,7 @@ export const appRouter = router({
           loginMethod: "email",
         });
         // Send verification email
-        const appUrl = ctx.req.headers.origin || "https://ivorverse.ai";
+        const appUrl = getAppUrl(ctx.req);
         const emailSent = await sendVerificationEmail(input.email, emailVerificationToken, appUrl);
         if (!emailSent) {
           console.warn(`[Auth] Failed to send verification email to ${input.email}`);
@@ -88,7 +89,6 @@ export const appRouter = router({
           success: true,
           userId: user.id,
           message: "Account created. Please verify your email.",
-          verificationToken: emailVerificationToken,
         };
       }),
 
@@ -133,8 +133,12 @@ export const appRouter = router({
             message: "Please verify your email before logging in",
           });
         }
+        // Must be a signed session JWT: authenticateRequest (session.ts)
+        // rejects anything else, so a raw user id here broke every request
+        // after an email/password login.
+        const { createSessionToken } = await import("./_core/session");
         const cookieOptions = getSessionCookieOptions(ctx.req);
-        ctx.res.cookie(COOKIE_NAME, user.id.toString(), cookieOptions);
+        ctx.res.cookie(COOKIE_NAME, await createSessionToken(user.id), cookieOptions);
         return {
           success: true,
           user: {
@@ -200,15 +204,17 @@ export const appRouter = router({
         const passwordResetExpires = getPasswordResetExpirationTime();
         await db.setPasswordResetToken(user.id, passwordResetToken, passwordResetExpires);
         // Send password reset email
-        const appUrl = ctx.req.headers.origin || "https://ivorverse.ai";
+        const appUrl = getAppUrl(ctx.req);
         const emailSent = await sendPasswordResetEmail(input.email, passwordResetToken, appUrl);
         if (!emailSent) {
           console.warn(`[Auth] Failed to send password reset email to ${input.email}`);
         }
+        // Same response whether or not the account exists, and never the
+        // token itself — returning it let anyone who knew an email address
+        // reset that account's password.
         return {
           success: true,
-          message: "Password reset link sent to your email.",
-          resetToken: passwordResetToken,
+          message: "If an account exists with this email, you will receive a password reset link.",
         };
       }),
 

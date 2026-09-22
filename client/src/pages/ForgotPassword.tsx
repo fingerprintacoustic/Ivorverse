@@ -12,7 +12,6 @@ export default function ForgotPassword() {
   const [email, setEmail] = useState("");
   const [error, setError] = useState("");
   const [success, setSuccess] = useState(false);
-  const [resetToken, setResetToken] = useState("");
 
   const requestResetMutation = trpc.auth.requestPasswordReset.useMutation();
 
@@ -30,9 +29,6 @@ export default function ForgotPassword() {
 
       if (result.success) {
         setSuccess(true);
-        if (result.resetToken) {
-          setResetToken(result.resetToken);
-        }
       }
     } catch (err: any) {
       setError(err.message || "Failed to request password reset");
@@ -54,16 +50,9 @@ export default function ForgotPassword() {
             <Alert className="border-green-500/30 bg-green-500/10">
               <AlertCircle className="h-4 w-4 text-green-400" />
               <AlertDescription className="text-green-400">
-                We've sent password reset instructions to <strong>{email}</strong>
+                If an account exists for <strong>{email}</strong>, we've sent password reset instructions to it
               </AlertDescription>
             </Alert>
-
-            {resetToken && (
-              <div className="bg-slate-800 p-4 rounded-lg border border-indigo-500/20">
-                <p className="text-sm text-slate-400 mb-2">For testing, your reset token is:</p>
-                <code className="text-xs text-indigo-300 break-all">{resetToken}</code>
-              </div>
-            )}
 
             <div className="space-y-2">
               <p className="text-sm text-slate-400">

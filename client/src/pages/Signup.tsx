@@ -15,7 +15,6 @@ export default function Signup() {
   const [name, setName] = useState("");
   const [error, setError] = useState("");
   const [success, setSuccess] = useState(false);
-  const [verificationToken, setVerificationToken] = useState("");
 
   const signupMutation = trpc.auth.signup.useMutation();
 
@@ -48,9 +47,7 @@ export default function Signup() {
 
       if (result.success) {
         setSuccess(true);
-        setVerificationToken(result.verificationToken);
         // Clear form
-        setEmail("");
         setPassword("");
         setConfirmPassword("");
         setName("");
@@ -78,11 +75,6 @@ export default function Signup() {
                 We've sent a verification link to <strong>{email}</strong>
               </AlertDescription>
             </Alert>
-
-            <div className="bg-slate-800 p-4 rounded-lg border border-indigo-500/20">
-              <p className="text-sm text-slate-400 mb-2">For testing, your verification token is:</p>
-              <code className="text-xs text-indigo-300 break-all">{verificationToken}</code>
-            </div>
 
             <div className="space-y-2">
               <p className="text-sm text-slate-400">

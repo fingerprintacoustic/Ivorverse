@@ -3,6 +3,7 @@ import { protectedProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 import * as db from "./db";
 import { SUBSCRIPTION_TIERS } from "./products";
+import { getAppUrl } from "./_core/appUrl";
 
 let _stripe: Stripe | null = null;
 function getStripe(): Stripe {
@@ -63,8 +64,8 @@ export const stripeRouter = router({
           },
         ],
         mode: "subscription",
-        success_url: `${ctx.req.headers.origin}/dashboard?session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${ctx.req.headers.origin}/dashboard`,
+        success_url: `${getAppUrl(ctx.req)}/dashboard?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${getAppUrl(ctx.req)}/dashboard`,
         client_reference_id: ctx.user.id.toString(),
         metadata: {
           user_id: ctx.user.id.toString(),
