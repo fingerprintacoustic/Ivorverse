@@ -100,6 +100,14 @@ describe("cross-user access is rejected", () => {
   }
 });
 
+describe("billing", () => {
+  it("has no client-callable way to change your own plan", () => {
+    const procedures = Object.keys(appRouter._def.procedures);
+    expect(procedures).toContain("subscriptions.getCurrent"); // sanity: right shape
+    expect(procedures).not.toContain("subscriptions.upgrade");
+  });
+});
+
 describe("character updates", () => {
   it("rejects fields outside name/description/personality (e.g. userId)", async () => {
     await expect(

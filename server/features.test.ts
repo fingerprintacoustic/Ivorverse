@@ -399,17 +399,6 @@ describe("IvorVerse AI - Feature Tests", () => {
       const subscription = await caller.subscriptions.getCurrent();
       expect(subscription).toBeDefined();
     });
-
-    it("should upgrade subscription", async () => {
-      const ctx = createMockContext();
-      const caller = appRouter.createCaller(ctx);
-
-      const result = await caller.subscriptions.upgrade({
-        tier: "pro",
-      });
-
-      expect(result).toBeDefined();
-    });
   });
 
   describe("Admin Router", () => {

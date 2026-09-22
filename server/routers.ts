@@ -1011,12 +1011,9 @@ You have a web_search tool available — use it whenever the user asks about cur
     getCurrent: protectedProcedure.query(async ({ ctx }) => {
       return await db.getOrCreateSubscription(ctx.user.id);
     }),
-
-    upgrade: protectedProcedure
-      .input(z.object({ tier: z.enum(["free", "pro", "business"]) }))
-      .mutation(async ({ ctx, input }) => {
-        return await db.updateSubscription(ctx.user.id, { tier: input.tier });
-      }),
+    // There is deliberately no client-callable "upgrade": the tier changes
+    // only when Stripe confirms payment (handleStripeWebhook). A previous
+    // subscriptions.upgrade let any user set their own tier for free.
   }),
 
   // Admin
