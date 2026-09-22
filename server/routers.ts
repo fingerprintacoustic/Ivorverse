@@ -82,11 +82,15 @@ export const appRouter = router({
   system: systemRouter,
   stripe: stripeRouter,
   auth: router({
-    me: publicProcedure.query((opts) => opts.ctx.user),
+    // Never return the raw record: it holds the password hash and live
+    // verification/reset tokens (an admin seeing another user's reset
+    // token could take over that account).
+    me: publicProcedure.query((opts) => (opts.ctx.user ? db.toPublicUser(opts.ctx.user) : null)),
     updateProfile: protectedProcedure
       .input(z.object({ name: z.string().trim().min(1).max(100) }))
       .mutation(async ({ ctx, input }) => {
-        return await db.updateUserProfile(ctx.user.id, { name: input.name });
+        const user = await db.updateUserProfile(ctx.user.id, { name: input.name });
+        return user ? db.toPublicUser(user) : null;
       }),
     logout: publicProcedure.mutation(({ ctx }) => {
       const cookieOptions = getSessionCookieOptions(ctx.req);
@@ -1049,13 +1053,14 @@ You have a web_search tool available — use it whenever the user asks about cur
   // Admin
   admin: router({
     listUsers: adminProcedure.query(async () => {
-      return await db.getAllUsers();
+      return (await db.getAllUsers()).map(db.toPublicUser);
     }),
 
     getUserDetails: adminProcedure
       .input(z.object({ userId: z.number() }))
       .query(async ({ input }) => {
-        return await db.getUserById(input.userId);
+        const user = await db.getUserById(input.userId);
+        return user ? db.toPublicUser(user) : null;
       }),
 
     disableUser: adminProcedure

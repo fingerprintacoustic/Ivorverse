@@ -46,6 +46,23 @@ export interface User {
   lastSignedIn: Date;
 }
 
+/** Secrets that must never leave the server, even to the user themselves. */
+const PRIVATE_USER_FIELDS = [
+  "passwordHash",
+  "emailVerificationToken",
+  "emailVerificationExpires",
+  "passwordResetToken",
+  "passwordResetExpires",
+] as const;
+export type PublicUser = Omit<User, (typeof PRIVATE_USER_FIELDS)[number]>;
+
+/** Strip credentials/tokens before a user record is returned to any client. */
+export function toPublicUser(user: User): PublicUser {
+  const copy: Record<string, unknown> = { ...user };
+  for (const field of PRIVATE_USER_FIELDS) delete copy[field];
+  return copy as PublicUser;
+}
+
 export interface Project {
   id: number;
   userId: number;
