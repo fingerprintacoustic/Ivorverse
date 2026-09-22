@@ -239,6 +239,27 @@ export interface Workflow {
   updatedAt: Date;
 }
 
+export interface WorkflowRunStep {
+  name: string;
+  status: "pending" | "running" | "completed" | "failed";
+  output?: string | null;
+  error?: string | null;
+  jobId?: number | null;
+}
+
+export interface WorkflowRun {
+  id: number;
+  userId: number;
+  workflowId: number;
+  status: "running" | "completed" | "failed";
+  input: string | null;
+  /** Snapshot of the workflow's steps at run time, with per-step results */
+  steps: WorkflowRunStep[];
+  completedAt?: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export interface Product {
   id: number;
   userId: number;
@@ -1221,6 +1242,73 @@ export async function getWorkflows(userId: number) {
   const db = await getDb();
   if (!db) return [];
   return await queryMany<Workflow>(db, "workflows", [["userId", userId]], "createdAt");
+}
+
+export async function getWorkflowById(workflowId: number, userId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const workflow = await getById<Workflow>(db, "workflows", workflowId);
+  if (!workflow || workflow.userId !== userId) return undefined;
+  return workflow;
+}
+
+/** Caller must have verified ownership (getWorkflowById). */
+export async function updateWorkflow(
+  workflowId: number,
+  updates: Partial<Pick<Workflow, "name" | "description" | "definition">>
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await updateDoc(db, "workflows", workflowId, updates);
+}
+
+/** Caller must have verified ownership (getWorkflowById). */
+export async function deleteWorkflow(workflowId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.collection("workflows").doc(String(workflowId)).delete();
+}
+
+export async function createWorkflowRun(
+  data: Pick<WorkflowRun, "userId" | "workflowId" | "input" | "steps">
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return await createDoc<WorkflowRun>(
+    db,
+    "workflowRuns",
+    { ...data, status: "running" },
+    { createdAt: true, updatedAt: true }
+  );
+}
+
+export async function getWorkflowRun(runId: number, userId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const run = await getById<WorkflowRun>(db, "workflowRuns", runId);
+  if (!run || run.userId !== userId) return undefined;
+  return run;
+}
+
+/** Caller must have verified ownership (getWorkflowRun). */
+export async function updateWorkflowRun(
+  runId: number,
+  updates: Partial<Pick<WorkflowRun, "status" | "steps" | "completedAt">>
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await updateDoc(db, "workflowRuns", runId, updates);
+}
+
+/** Newest first. Sorted in memory: equality-only filters need no composite index. */
+export async function getWorkflowRuns(workflowId: number, userId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  const runs = await queryMany<WorkflowRun>(db, "workflowRuns", [
+    ["workflowId", workflowId],
+    ["userId", userId],
+  ]);
+  return runs.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 }
 
 // ---------------------------------------------------------------------------

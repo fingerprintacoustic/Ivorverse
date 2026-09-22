@@ -14,6 +14,12 @@ vi.mock("./db", () => {
       characterId === 1 && userId === 1 ? { id: 1, userId: 1 } : undefined
     ),
     updateTaskStatus: vi.fn(async (_taskId: number, userId: number) => userId === 1),
+    getWorkflowById: vi.fn(async (id: number, userId: number) =>
+      id === 1 && userId === 1 ? { id: 1, userId: 1, name: "w", definition: "{}" } : undefined
+    ),
+    getWorkflowRun: vi.fn(async (id: number, userId: number) =>
+      id === 1 && userId === 1 ? { id: 1, userId: 1, steps: [] } : undefined
+    ),
     getTaskById: vi.fn(async (taskId: number, userId: number) =>
       taskId === 1 && userId === 1 ? { id: 1, userId: 1, status: "pending" } : undefined
     ),
@@ -68,6 +74,15 @@ const attempts: Record<string, () => Promise<unknown>> = {
   "agents.updateTaskStatus": () => intruder.agents.updateTaskStatus({ taskId: 1, status: "completed" }),
   "agents.createTask": () => intruder.agents.createTask({ title: "x", agentId: 1 }),
   "agents.runTask": () => intruder.agents.runTask({ taskId: 1 }),
+  "workflows.update": () =>
+    intruder.workflows.update({ workflowId: 1, name: "x", definition: { steps: [{ name: "a", instructions: "b" }] } }),
+  "workflows.delete": () => intruder.workflows.delete({ workflowId: 1 }),
+  "workflows.run": () => intruder.workflows.run({ workflowId: 1 }),
+  "workflows.listRuns": () => intruder.workflows.listRuns({ workflowId: 1 }),
+  "workflows.getRun": () => intruder.workflows.getRun({ runId: 1 }),
+  // a workflow step pointing at another user's agent
+  "workflows.create (foreign agent)": () =>
+    intruder.workflows.create({ name: "x", definition: { steps: [{ name: "a", agentId: 1, instructions: "b" }] } }),
   "characters.uploadMedia": () =>
     intruder.characters.uploadMedia({ characterId: 1, kind: "face", fileData: "", mimeType: "image/png" }),
 };

@@ -14,6 +14,12 @@ import { processVoiceTurn } from "./_core/voiceConversation";
 import { enqueueJob } from "./_core/jobs";
 import { AppTypeSchema } from "./_core/appGeneration";
 import { AGENT_TOOLS, DEFAULT_AGENT_TOOLS } from "./_core/agentRunner";
+import {
+  parseWorkflowDefinition,
+  startWorkflowRun,
+  WorkflowDefinitionSchema,
+  type WorkflowDefinition,
+} from "./_core/workflowRunner";
 import { stripeRouter } from "./stripe";
 import { TRPCError } from "@trpc/server";
 import { checkRateLimit, getRateLimitKey, AUTH_RATE_LIMITS } from "./_core/rateLimiter";
@@ -30,6 +36,16 @@ async function requireOwnedProject(projectId: number, userId: number) {
   const project = await db.getProjectById(projectId, userId);
   if (!project) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found" });
   return project;
+}
+
+/** Every agent a workflow's steps reference must belong to the caller. */
+async function requireOwnedAgents(definition: WorkflowDefinition, userId: number) {
+  const ids = definition.steps.map((s) => s.agentId).filter((id): id is number => typeof id === "number");
+  if (ids.length === 0) return;
+  const owned = new Set((await db.getAgents(userId)).map((a) => a.id));
+  if (ids.some((id) => !owned.has(id))) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
+  }
 }
 
 export const appRouter = router({
@@ -1123,25 +1139,100 @@ You have a web_search tool available — use it whenever the user asks about cur
     create: protectedProcedure
       .input(
         z.object({
-          name: z.string(),
-          definition: z.string(),
-          description: z.string().optional(),
+          name: z.string().trim().min(1).max(100),
+          description: z.string().max(2000).optional(),
+          definition: WorkflowDefinitionSchema,
         })
       )
       .mutation(async ({ input, ctx }) => {
+        await requireOwnedAgents(input.definition, ctx.user.id);
         const result = await db.createWorkflow(
           ctx.user.id,
           input.name,
-          input.definition,
+          JSON.stringify(input.definition),
           input.description
         );
         await db.logAuditAction("create_workflow", ctx.user.id);
         return result;
       }),
 
+    update: protectedProcedure
+      .input(
+        z.object({
+          workflowId: z.number(),
+          name: z.string().trim().min(1).max(100),
+          description: z.string().max(2000).optional(),
+          definition: WorkflowDefinitionSchema,
+        })
+      )
+      .mutation(async ({ input, ctx }) => {
+        const workflow = await db.getWorkflowById(input.workflowId, ctx.user.id);
+        if (!workflow) throw new TRPCError({ code: "NOT_FOUND", message: "Workflow not found" });
+        await requireOwnedAgents(input.definition, ctx.user.id);
+        await db.updateWorkflow(workflow.id, {
+          name: input.name,
+          description: input.description ?? null,
+          definition: JSON.stringify(input.definition),
+        });
+        return { success: true };
+      }),
+
+    delete: protectedProcedure
+      .input(z.object({ workflowId: z.number() }))
+      .mutation(async ({ input, ctx }) => {
+        const workflow = await db.getWorkflowById(input.workflowId, ctx.user.id);
+        if (!workflow) throw new TRPCError({ code: "NOT_FOUND", message: "Workflow not found" });
+        await db.deleteWorkflow(workflow.id);
+        return { success: true };
+      }),
+
+    // steps is null for legacy free-form definitions, which can't run
     list: protectedProcedure.query(async ({ ctx }) => {
-      return await db.getWorkflows(ctx.user.id);
+      const workflows = await db.getWorkflows(ctx.user.id);
+      return workflows.map((w) => ({ ...w, steps: parseWorkflowDefinition(w.definition)?.steps ?? null }));
     }),
+
+    run: protectedProcedure
+      .input(z.object({ workflowId: z.number(), input: z.string().max(8000).optional() }))
+      .mutation(async ({ input, ctx }) => {
+        const workflow = await db.getWorkflowById(input.workflowId, ctx.user.id);
+        if (!workflow) throw new TRPCError({ code: "NOT_FOUND", message: "Workflow not found" });
+        const definition = parseWorkflowDefinition(workflow.definition);
+        if (!definition) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "This workflow uses an old definition format. Edit it to add steps before running.",
+          });
+        }
+        const run = await startWorkflowRun(workflow, definition, ctx.user.id, input.input?.trim() || null);
+        return { runId: run.id };
+      }),
+
+    listRuns: protectedProcedure
+      .input(z.object({ workflowId: z.number() }))
+      .query(async ({ input, ctx }) => {
+        const workflow = await db.getWorkflowById(input.workflowId, ctx.user.id);
+        if (!workflow) throw new TRPCError({ code: "NOT_FOUND", message: "Workflow not found" });
+        const runs = await db.getWorkflowRuns(workflow.id, ctx.user.id);
+        // Summaries only; full step outputs come from getRun
+        return runs.slice(0, 20).map((r) => ({
+          id: r.id,
+          status: r.status,
+          input: r.input,
+          createdAt: r.createdAt,
+          completedAt: r.completedAt,
+          stepsDone: r.steps.filter((s) => s.status === "completed").length,
+          stepCount: r.steps.length,
+        }));
+      }),
+
+    getRun: protectedProcedure
+      .input(z.object({ runId: z.number() }))
+      .query(async ({ input, ctx }) => {
+        const run = await db.getWorkflowRun(input.runId, ctx.user.id);
+        if (!run) throw new TRPCError({ code: "NOT_FOUND", message: "Run not found" });
+        return run;
+      }),
   }),
 
   monetization: router({

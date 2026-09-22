@@ -122,84 +122,96 @@ function extractReport(content: Anthropic.Beta.BetaContentBlock[]): string {
   return `${text}\n\n## Sources\n${list}`;
 }
 
+/**
+ * The agent loop: work `prompt` with the agent's instructions and tools
+ * until Claude produces a final report. Shared by agent tasks and workflow
+ * steps. `onProgress` receives 0–100 and a short stage label.
+ */
+export async function runAgent(options: {
+  agent: { name: string; description: string | null; capabilities?: unknown } | undefined;
+  prompt: string;
+  onProgress: (progress: number, stage: string) => Promise<void>;
+}): Promise<string> {
+  const { agent, prompt, onProgress } = options;
+  const tools = agentTools(agent?.capabilities);
+  const messages: Anthropic.Beta.BetaMessageParam[] = [{ role: "user", content: prompt }];
+  const started = Date.now();
+  let wrapUp = false;
+
+  for (let round = 0; round < MAX_ROUNDS; round++) {
+    const response = await getClient().beta.messages.create({
+      model: MODEL,
+      max_tokens: 16000,
+      thinking: { type: "adaptive" },
+      output_config: { effort: "high" },
+      // If Opus 5 declines, the API re-runs the request on its default fallback model
+      betas: ["server-side-fallback-2026-07-01"],
+      fallbacks: "default",
+      system: systemPrompt(agent, tools),
+      tools: tools.map((t) => TOOL_DEFS[t]),
+      ...(wrapUp ? { tool_choice: { type: "none" as const } } : {}),
+      messages,
+    });
+
+    const steps = response.content.map(describeStep).filter((s): s is string => s !== null);
+    const progress = Math.min(90, 10 + Math.round(((round + 1) / MAX_ROUNDS) * 80));
+    await onProgress(progress, steps.at(-1) ?? "Thinking");
+
+    if (response.stop_reason === "refusal") {
+      throw new Error("The agent declined this task.");
+    }
+
+    messages.push({ role: "assistant", content: response.content });
+
+    if (response.stop_reason === "pause_turn") {
+      // Server-side tool loop hit its iteration cap; re-sending resumes it
+      continue;
+    }
+    if (response.stop_reason !== "tool_use") {
+      const report = extractReport(response.content);
+      if (!report) throw new Error("The agent finished without writing a report.");
+      return report;
+    }
+
+    const toolUses = response.content.filter(
+      (b): b is Anthropic.Beta.BetaToolUseBlock => b.type === "tool_use"
+    );
+    const results: Anthropic.Beta.BetaContentBlockParam[] = await Promise.all(toolUses.map(executeClientTool));
+
+    // Out of time or rounds: ask for the report now, with tools disabled
+    if (Date.now() - started > TIME_BUDGET_MS || round >= MAX_ROUNDS - 2) {
+      wrapUp = true;
+      results.push({
+        type: "text",
+        text: "You're out of time for further research. Write your final report now with what you have.",
+      });
+    }
+    messages.push({ role: "user", content: results });
+  }
+
+  throw new Error("The agent didn't finish within its step limit.");
+}
+
 export async function runAgentTaskJob(input: { taskId: number }, ctx: JobContext) {
   const task = await db.getTaskById(input.taskId, ctx.userId);
   if (!task) throw new Error("Task not found");
   const agent = task.agentId ? await db.getAgentById(task.agentId, ctx.userId) : undefined;
-  const tools = agentTools(agent?.capabilities);
 
   await db.updateTask(task.id, { status: "in_progress", progress: 5, error: null });
+  await ctx.report(5, "Starting");
 
   try {
-    const report = async (progress: number, stage: string) => {
-      await ctx.report(progress, stage);
-      await db.updateTask(task.id, { progress });
-    };
-    await report(5, "Starting");
+    const result = await runAgent({
+      agent,
+      prompt: `Task: ${task.title}${task.description ? `
 
-    const messages: Anthropic.Beta.BetaMessageParam[] = [
-      {
-        role: "user",
-        content: `Task: ${task.title}${task.description ? `\n\nDetails:\n${task.description}` : ""}`,
+Details:
+${task.description}` : ""}`,
+      onProgress: async (progress, stage) => {
+        await ctx.report(progress, stage);
+        await db.updateTask(task.id, { progress });
       },
-    ];
-    const started = Date.now();
-    let finalContent: Anthropic.Beta.BetaContentBlock[] | null = null;
-    let wrapUp = false;
-
-    for (let round = 0; round < MAX_ROUNDS && !finalContent; round++) {
-      const response = await getClient().beta.messages.create({
-        model: MODEL,
-        max_tokens: 16000,
-        thinking: { type: "adaptive" },
-        output_config: { effort: "high" },
-        // If Opus 5 declines, the API re-runs the request on its default fallback model
-        betas: ["server-side-fallback-2026-07-01"],
-        fallbacks: "default",
-        system: systemPrompt(agent, tools),
-        tools: tools.map((t) => TOOL_DEFS[t]),
-        ...(wrapUp ? { tool_choice: { type: "none" as const } } : {}),
-        messages,
-      });
-
-      const steps = response.content.map(describeStep).filter((s): s is string => s !== null);
-      const progress = Math.min(90, 10 + Math.round(((round + 1) / MAX_ROUNDS) * 80));
-      await report(progress, steps.at(-1) ?? "Thinking");
-
-      if (response.stop_reason === "refusal") {
-        throw new Error("The agent declined this task.");
-      }
-
-      messages.push({ role: "assistant", content: response.content });
-
-      if (response.stop_reason === "pause_turn") {
-        // Server-side tool loop hit its iteration cap; re-sending resumes it
-        continue;
-      }
-      if (response.stop_reason !== "tool_use") {
-        finalContent = response.content;
-        break;
-      }
-
-      const toolUses = response.content.filter(
-        (b): b is Anthropic.Beta.BetaToolUseBlock => b.type === "tool_use"
-      );
-      const results: Anthropic.Beta.BetaContentBlockParam[] = await Promise.all(toolUses.map(executeClientTool));
-
-      // Out of time or rounds: ask for the report now, with tools disabled
-      if (Date.now() - started > TIME_BUDGET_MS || round >= MAX_ROUNDS - 2) {
-        wrapUp = true;
-        results.push({
-          type: "text",
-          text: "You're out of time for further research. Write your final report now with what you have.",
-        });
-      }
-      messages.push({ role: "user", content: results });
-    }
-
-    if (!finalContent) throw new Error("The agent didn't finish within its step limit.");
-    const result = extractReport(finalContent);
-    if (!result) throw new Error("The agent finished without writing a report.");
+    });
 
     await db.updateTask(task.id, { status: "completed", progress: 100, result, completedAt: new Date() });
     await db.trackUsage(ctx.userId, "agent_task");

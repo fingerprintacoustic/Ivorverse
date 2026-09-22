@@ -17,6 +17,7 @@
 import * as db from "../db";
 
 export type JobContext = {
+  jobId: number;
   userId: number;
   /** Report progress (0–100) and a short human-readable stage label. */
   report: (progress: number, stage: string) => Promise<void>;
@@ -29,6 +30,7 @@ const HANDLERS: Record<string, () => Promise<JobHandler>> = {
   app_build: async () => (await import("./appGeneration")).runAppBuildJob,
   video_assemble: async () => (await import("./videoGeneration")).runVideoAssembleJob,
   music_generate: async () => (await import("./musicGeneration")).runMusicGenerateJob,
+  workflow_step: async () => (await import("./workflowRunner")).runWorkflowStepJob,
   agent_task: async () => (await import("./agentRunner")).runAgentTaskJob,
 };
 
@@ -59,6 +61,7 @@ export async function runJob(jobId: number): Promise<void> {
   }
 
   const ctx: JobContext = {
+    jobId,
     userId: job.userId,
     report: (progress, stage) => db.updateJob(jobId, { progress, stage }),
   };
