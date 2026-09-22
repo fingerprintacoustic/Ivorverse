@@ -1026,6 +1026,16 @@ export async function updateUserProfile(userId: number, updates: { name?: string
   return await getById<User>(db, "users", userId);
 }
 
+/**
+ * Keep users.subscriptionTier (what the UI shows) in step with the
+ * subscriptions record. Only the Stripe webhook should call this.
+ */
+export async function setUserSubscriptionTier(userId: number, tier: User["subscriptionTier"]) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await updateDoc(db, "users", userId, { subscriptionTier: tier });
+}
+
 export async function disableUser(userId: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");

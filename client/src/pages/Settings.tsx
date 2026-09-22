@@ -7,6 +7,7 @@ import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
 import { useEffect, useState } from "react";
 import { trpc } from "@/lib/trpc";
+import { BillingCard } from "@/components/BillingCard";
 
 export default function Settings() {
   const { user } = useAuth();
@@ -112,6 +113,10 @@ export default function Settings() {
           </Button>
         </CardContent>
       </Card>
+
+      <Separator />
+
+      <BillingCard />
 
       <Separator />
 
