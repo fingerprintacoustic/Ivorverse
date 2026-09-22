@@ -220,7 +220,11 @@ export async function handleStripeWebhook(event: Stripe.Event) {
   switch (event.type) {
     case "checkout.session.completed": {
       const session = event.data.object as Stripe.Checkout.Session;
-      if (session.mode === "subscription" && session.subscription) {
+      if (session.metadata?.product_id) {
+        // A buyer purchasing a seller's product (Connect), not a plan change
+        const { recordProductSale } = await import("./_core/marketplace");
+        await recordProductSale(session);
+      } else if (session.mode === "subscription" && session.subscription) {
         const sub = await getStripe().subscriptions.retrieve(
           typeof session.subscription === "string" ? session.subscription : session.subscription.id
         );

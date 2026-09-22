@@ -38,6 +38,9 @@ export interface User {
   emailVerificationExpires: Date | null;
   passwordResetToken: string | null;
   passwordResetExpires: Date | null;
+  /** Stripe Connect (Express) account used to sell products — see marketplace.ts */
+  stripeConnectAccountId?: string | null;
+  stripeChargesEnabled?: boolean;
   createdAt: Date;
   updatedAt: Date;
   lastSignedIn: Date;
@@ -264,11 +267,28 @@ export interface Product {
   id: number;
   userId: number;
   name: string;
+  /** "subscription" bills monthly; every other type is a one-time purchase */
   type: "digital" | "subscription" | "course" | "ebook" | "saas";
   description: string | null;
+  /** USD */
   price: number | null;
+  /** What the buyer gets after paying (download/course/app link). Never public. */
+  deliveryUrl?: string | null;
+  published?: boolean;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface Sale {
+  id: number;
+  productId: number;
+  sellerId: number;
+  /** USD, as charged */
+  amount: number;
+  buyerEmail: string | null;
+  mode: "payment" | "subscription";
+  stripeSessionId: string;
+  createdAt: Date;
 }
 
 export interface ProjectMemory {
@@ -1341,6 +1361,71 @@ export async function createProduct(
     price: price ?? null,
     description: description ?? null,
   });
+}
+
+export async function getProductById(productId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  return await getById<Product>(db, "products", productId);
+}
+
+/** Caller must have verified ownership. */
+export async function updateProduct(
+  productId: number,
+  updates: Partial<Pick<Product, "name" | "type" | "description" | "price" | "deliveryUrl" | "published">>
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await updateDoc(db, "products", productId, updates);
+}
+
+/** Caller must have verified ownership. */
+export async function deleteProduct(productId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.collection("products").doc(String(productId)).delete();
+}
+
+export async function setUserConnectAccount(
+  userId: number,
+  updates: { stripeConnectAccountId?: string; stripeChargesEnabled?: boolean }
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await updateDoc(db, "users", userId, updates);
+}
+
+/**
+ * Record a sale once per Checkout session (webhooks can be delivered more
+ * than once). The session id is the document id, so creation is atomic.
+ */
+export async function recordSaleOnce(data: Omit<Sale, "id" | "createdAt">): Promise<boolean> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const ref = db.collection("sales").doc(data.stripeSessionId);
+  try {
+    await ref.create({ ...data, createdAt: new Date() });
+    return true;
+  } catch (error: any) {
+    if (error?.code === 6 /* ALREADY_EXISTS */) return false;
+    throw error;
+  }
+}
+
+/** Newest first; sorted in memory so no composite index is needed. */
+export async function getSalesBySeller(sellerId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  const snap = await db.collection("sales").where("sellerId", "==", sellerId).get();
+  return snap.docs
+    .map((d) => {
+      const data = d.data();
+      return {
+        ...data,
+        createdAt: data.createdAt instanceof Timestamp ? data.createdAt.toDate() : data.createdAt,
+      } as Omit<Sale, "id">;
+    })
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 }
 
 export async function getProducts(userId: number) {

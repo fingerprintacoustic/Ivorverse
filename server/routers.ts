@@ -15,6 +15,14 @@ import { enqueueJob } from "./_core/jobs";
 import { AppTypeSchema } from "./_core/appGeneration";
 import { AGENT_TOOLS, DEFAULT_AGENT_TOOLS } from "./_core/agentRunner";
 import {
+  createOnboardingLink,
+  createProductCheckout,
+  getPurchaseDelivery,
+  isRecurring,
+  platformFeePercent,
+  refreshSellerStatus,
+} from "./_core/marketplace";
+import {
   parseWorkflowDefinition,
   startWorkflowRun,
   WorkflowDefinitionSchema,
@@ -36,6 +44,28 @@ async function requireOwnedProject(projectId: number, userId: number) {
   const project = await db.getProjectById(projectId, userId);
   if (!project) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found" });
   return project;
+}
+
+const ProductInputSchema = z.object({
+  name: z.string().trim().min(1).max(200),
+  type: z.enum(["digital", "subscription", "course", "ebook", "saas"]),
+  price: z.number().min(1).max(10000), // USD
+  description: z.string().max(5000).optional(),
+  // http(s) only: it goes into buyer emails and links
+  deliveryUrl: z
+    .string()
+    .url()
+    .refine((u) => /^https?:\/\//i.test(u), "Must be an http(s) link")
+    .optional(),
+  published: z.boolean().default(false),
+});
+
+async function requireOwnedProduct(productId: number, userId: number) {
+  const product = await db.getProductById(productId);
+  if (!product || product.userId !== userId) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Product not found" });
+  }
+  return product;
 }
 
 /** Every agent a workflow's steps reference must belong to the caller. */
@@ -1233,30 +1263,127 @@ You have a web_search tool available — use it whenever the user asks about cur
   }),
 
   monetization: router({
+    // --- Seller (Stripe Connect) ---
+    sellerStatus: protectedProcedure.query(async ({ ctx }) => {
+      const user = await db.getUserById(ctx.user.id);
+      const status = await refreshSellerStatus({ id: ctx.user.id, stripeConnectAccountId: user?.stripeConnectAccountId });
+      return { ...status, platformFeePercent: platformFeePercent() };
+    }),
+
+    startOnboarding: protectedProcedure.mutation(async ({ ctx }) => {
+      const user = await db.getUserById(ctx.user.id);
+      if (!user) throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
+      return { url: await createOnboardingLink(user, getAppUrl(ctx.req)) };
+    }),
+
+    // Stripe Express dashboard (balance, payouts, refunds)
+    sellerDashboardLink: protectedProcedure.mutation(async ({ ctx }) => {
+      const user = await db.getUserById(ctx.user.id);
+      if (!user?.stripeConnectAccountId) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Connect Stripe first" });
+      }
+      const { getStripe } = await import("./stripe");
+      const link = await getStripe().accounts.createLoginLink(user.stripeConnectAccountId);
+      return { url: link.url };
+    }),
+
+    // --- Products (seller) ---
     createProduct: protectedProcedure
-      .input(
-        z.object({
-          name: z.string(),
-          type: z.enum(["digital", "subscription", "course", "ebook", "saas"]),
-          price: z.number().optional(),
-          description: z.string().optional(),
-        })
-      )
+      .input(ProductInputSchema)
       .mutation(async ({ input, ctx }) => {
-        const result = await db.createProduct(
-          ctx.user.id,
-          input.name,
-          input.type,
-          input.price,
-          input.description
-        );
+        const result = await db.createProduct(ctx.user.id, input.name, input.type, input.price, input.description);
+        await db.updateProduct(result.id, { deliveryUrl: input.deliveryUrl ?? null, published: input.published });
         await db.logAuditAction("create_product", ctx.user.id);
         return result;
       }),
 
+    updateProduct: protectedProcedure
+      .input(ProductInputSchema.extend({ productId: z.number() }))
+      .mutation(async ({ input, ctx }) => {
+        await requireOwnedProduct(input.productId, ctx.user.id);
+        await db.updateProduct(input.productId, {
+          name: input.name,
+          type: input.type,
+          price: input.price,
+          description: input.description ?? null,
+          deliveryUrl: input.deliveryUrl ?? null,
+          published: input.published,
+        });
+        return { success: true };
+      }),
+
+    deleteProduct: protectedProcedure
+      .input(z.object({ productId: z.number() }))
+      .mutation(async ({ input, ctx }) => {
+        await requireOwnedProduct(input.productId, ctx.user.id);
+        await db.deleteProduct(input.productId);
+        return { success: true };
+      }),
+
     listProducts: protectedProcedure.query(async ({ ctx }) => {
-      return await db.getProducts(ctx.user.id);
+      const [products, sales] = await Promise.all([db.getProducts(ctx.user.id), db.getSalesBySeller(ctx.user.id)]);
+      return products.map((p) => {
+        const productSales = sales.filter((s) => s.productId === p.id);
+        return {
+          ...p,
+          salesCount: productSales.length,
+          revenue: productSales.reduce((sum, s) => sum + s.amount, 0),
+        };
+      });
     }),
+
+    recentSales: protectedProcedure.query(async ({ ctx }) => {
+      const [sales, products] = await Promise.all([db.getSalesBySeller(ctx.user.id), db.getProducts(ctx.user.id)]);
+      const names = new Map(products.map((p) => [p.id, p.name]));
+      return sales.slice(0, 20).map((s) => ({
+        productName: names.get(s.productId) ?? "Deleted product",
+        amount: s.amount,
+        buyerEmail: s.buyerEmail,
+        mode: s.mode,
+        createdAt: s.createdAt,
+      }));
+    }),
+
+    // --- Public (buyers; no account needed) ---
+    getPublicProduct: publicProcedure
+      .input(z.object({ productId: z.number() }))
+      .query(async ({ input }) => {
+        const product = await db.getProductById(input.productId);
+        if (!product || !product.published) throw new TRPCError({ code: "NOT_FOUND", message: "Product not found" });
+        const seller = await db.getUserById(product.userId);
+        // Deliberately excludes deliveryUrl: that is only for paying buyers
+        return {
+          id: product.id,
+          name: product.name,
+          description: product.description,
+          type: product.type,
+          price: product.price,
+          recurring: isRecurring(product),
+          sellerName: seller?.name ?? "Seller",
+          purchasable: Boolean(seller?.stripeChargesEnabled && product.price && product.price > 0),
+        };
+      }),
+
+    checkout: publicProcedure
+      .input(z.object({ productId: z.number() }))
+      .mutation(async ({ input, ctx }) => {
+        try {
+          return { url: await createProductCheckout(input.productId, getAppUrl(ctx.req)) };
+        } catch (error) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: error instanceof Error ? error.message : "Checkout failed",
+          });
+        }
+      }),
+
+    getPurchase: publicProcedure
+      .input(z.object({ productId: z.number(), sessionId: z.string().regex(/^cs_[A-Za-z0-9_]+$/) }))
+      .query(async ({ input }) => {
+        const delivery = await getPurchaseDelivery(input.productId, input.sessionId);
+        if (!delivery) throw new TRPCError({ code: "NOT_FOUND", message: "Purchase not found" });
+        return delivery;
+      }),
   }),
 });
 

@@ -15,6 +15,8 @@ vi.mock("./db", () => ({
   updateSubscription: vi.fn(async (userId: number, updates: any) => Object.assign(subs.get(userId), updates)),
   setUserSubscriptionTier: vi.fn(async (userId: number, tier: string) => userTiers.set(userId, tier)),
   getSubscriptionByUserId: vi.fn(async (userId: number) => subs.get(userId)),
+  recordSaleOnce: vi.fn(async () => true),
+  getProductById: vi.fn(async () => undefined),
 }));
 
 process.env.STRIPE_SECRET_KEY = "sk_test_dummy";
@@ -110,6 +112,32 @@ describe("Stripe webhook", () => {
     await post(subscriptionEvent("customer.subscription.deleted", { status: "canceled", canceled_at: 1_763_000_000 }));
     expect(subs.get(7)).toMatchObject({ tier: "free", status: "canceled", stripeSubscriptionId: null });
     expect(userTiers.get(7)).toBe("free");
+  });
+
+  it("records a product purchase as a sale without touching the buyer's plan", async () => {
+    const db = await import("./db");
+    const res = await post({
+      id: "evt_2",
+      object: "event",
+      type: "checkout.session.completed",
+      data: {
+        object: {
+          id: "cs_product",
+          object: "checkout.session",
+          mode: "subscription",
+          subscription: "sub_product",
+          payment_status: "paid",
+          amount_total: 500,
+          client_reference_id: "7",
+          customer_details: { email: "buyer@test.com" },
+          metadata: { product_id: "10", seller_id: "2" },
+        },
+      },
+    });
+    expect(res.status).toBe(200);
+    expect(db.recordSaleOnce).toHaveBeenCalledWith(expect.objectContaining({ productId: 10, stripeSessionId: "cs_product" }));
+    expect(subs.size).toBe(0);
+    expect(userTiers.size).toBe(0);
   });
 
   it("ignores subscriptions that aren't IvorVerse plans", async () => {

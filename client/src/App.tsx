@@ -25,6 +25,7 @@ import VerifyEmail from "./pages/VerifyEmail";
 import AgentsFeature from "./pages/AgentsFeature";
 import WorkflowsFeature from "./pages/WorkflowsFeature";
 import MonetizeFeature from "./pages/MonetizeFeature";
+import ProductPage from "./pages/ProductPage";
 
 function Router() {
   return (
@@ -51,6 +52,7 @@ function Router() {
       <Route path={"/feature/agents"} component={AgentsFeature} />
       <Route path={"/feature/workflows"} component={WorkflowsFeature} />
       <Route path={"/feature/monetize"} component={MonetizeFeature} />
+      <Route path={"/p/:id"} component={ProductPage} />
       <Route path={"/404"} component={NotFound} />
       {/* Final fallback route */}
       <Route component={NotFound} />

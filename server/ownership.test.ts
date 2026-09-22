@@ -20,6 +20,14 @@ vi.mock("./db", () => {
     getWorkflowRun: vi.fn(async (id: number, userId: number) =>
       id === 1 && userId === 1 ? { id: 1, userId: 1, steps: [] } : undefined
     ),
+    getProductById: vi.fn(async (id: number) =>
+      id === 1
+        ? { id: 1, userId: 1, name: "Guide", type: "ebook", price: 10, published: true, deliveryUrl: "https://secret.test/file" }
+        : id === 2
+          ? { id: 2, userId: 1, name: "Draft", type: "ebook", price: 10, published: false }
+          : undefined
+    ),
+    getUserById: vi.fn(async (id: number) => (id === 1 ? { id: 1, name: "Seller", stripeChargesEnabled: true } : undefined)),
     getTaskById: vi.fn(async (taskId: number, userId: number) =>
       taskId === 1 && userId === 1 ? { id: 1, userId: 1, status: "pending" } : undefined
     ),
@@ -80,6 +88,10 @@ const attempts: Record<string, () => Promise<unknown>> = {
   "workflows.run": () => intruder.workflows.run({ workflowId: 1 }),
   "workflows.listRuns": () => intruder.workflows.listRuns({ workflowId: 1 }),
   "workflows.getRun": () => intruder.workflows.getRun({ runId: 1 }),
+  "monetization.updateProduct": () =>
+    intruder.monetization.updateProduct({ productId: 1, name: "x", type: "ebook", price: 5, published: true }),
+  "monetization.deleteProduct": () => intruder.monetization.deleteProduct({ productId: 1 }),
+  "monetization.getPublicProduct (draft)": () => intruder.monetization.getPublicProduct({ productId: 2 }),
   // a workflow step pointing at another user's agent
   "workflows.create (foreign agent)": () =>
     intruder.workflows.create({ name: "x", definition: { steps: [{ name: "a", agentId: 1, instructions: "b" }] } }),
@@ -98,6 +110,14 @@ describe("cross-user access is rejected", () => {
       expect(dbCalls).toEqual([]);
     });
   }
+});
+
+describe("public product page", () => {
+  it("never exposes the delivery link", async () => {
+    const product = await intruder.monetization.getPublicProduct({ productId: 1 });
+    expect(product).toMatchObject({ name: "Guide", price: 10, purchasable: true });
+    expect(JSON.stringify(product)).not.toContain("secret.test");
+  });
 });
 
 describe("billing", () => {
