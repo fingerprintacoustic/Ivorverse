@@ -28,6 +28,8 @@ const runAgent = vi.fn();
 vi.mock("./_core/agentRunner", () => ({ runAgent }));
 const enqueueJob = vi.fn(async () => ({ id: 99 }));
 vi.mock("./_core/jobs", () => ({ enqueueJob }));
+const refundQuota = vi.fn(async () => {});
+vi.mock("./_core/quota", () => ({ refundQuota }));
 
 const { runWorkflowStepJob, startWorkflowRun, parseWorkflowDefinition } = await import("./_core/workflowRunner");
 
@@ -46,6 +48,7 @@ describe("workflow runner", () => {
     agents.clear();
     runAgent.mockReset();
     enqueueJob.mockClear();
+    refundQuota.mockClear();
     workflows.set(5, { id: 5, userId: 1, name: "Blog pipeline", definition: JSON.stringify(definition) });
     agents.set(7, { id: 7, userId: 1, name: "Researcher", description: "Be thorough.", capabilities: ["web_search"] });
   });
@@ -97,7 +100,7 @@ describe("workflow runner", () => {
   });
 
   it("fails the run when a step fails, without queueing more", async () => {
-    await startWorkflowRun(workflows.get(5), definition, 1, null);
+    await startWorkflowRun(workflows.get(5), definition, 1, null, "2026-09");
     runAgent.mockRejectedValueOnce(new Error("The agent declined this task."));
 
     await expect(runWorkflowStepJob({ runId: 1, stepIndex: 0 }, ctx(11))).rejects.toThrow("declined");
@@ -105,6 +108,19 @@ describe("workflow runner", () => {
     expect(runs.get(1).status).toBe("failed");
     expect(runs.get(1).steps[0]).toMatchObject({ status: "failed", error: "The agent declined this task." });
     expect(enqueueJob).toHaveBeenCalledTimes(1);
+    // Both steps were charged up front; the failed step and the unrun one are refunded
+    expect(refundQuota).toHaveBeenCalledWith(1, "agentRuns", 2, "2026-09");
+  });
+
+  it("refunds only the unfinished steps when a later step fails", async () => {
+    await startWorkflowRun(workflows.get(5), definition, 1, null, "2026-09");
+    runAgent.mockResolvedValueOnce("facts").mockRejectedValueOnce(new Error("boom"));
+
+    await runWorkflowStepJob({ runId: 1, stepIndex: 0 }, ctx(11));
+    await expect(runWorkflowStepJob({ runId: 1, stepIndex: 1 }, ctx(12))).rejects.toThrow("boom");
+
+    expect(refundQuota).toHaveBeenCalledTimes(1);
+    expect(refundQuota).toHaveBeenCalledWith(1, "agentRuns", 1, "2026-09");
   });
 
   it("fails clearly if the step's agent was deleted", async () => {

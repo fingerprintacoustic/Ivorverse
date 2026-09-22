@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { getLoginUrl } from "@/const";
+import { PLANS, planFeatureList } from "@shared/plans";
 import { useLocation } from "wouter";
 import {
   MessageSquare,
@@ -174,61 +175,47 @@ export default function Home() {
           </p>
         </div>
 
+        {/* Generated from shared/plans.ts, the same limits the server enforces */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-          {/* Free Plan */}
-          <div className="bg-gradient-to-br from-indigo-900/50 to-cyan-900/50 border border-indigo-500/20 rounded-lg p-8">
-            <h3 className="text-2xl font-bold text-white mb-2">Free</h3>
-            <p className="text-gray-300 mb-6">Perfect for getting started</p>
-            <div className="text-3xl font-bold text-white mb-6">$0<span className="text-lg text-gray-300">/mo</span></div>
-            <ul className="space-y-3 mb-8 text-gray-300">
-              <li>✓ 10 chat messages/day</li>
-              <li>✓ 5 research queries/day</li>
-              <li>✓ 2 image generations/day</li>
-              <li>✓ 10MB file uploads</li>
-            </ul>
-            <Button variant="outline" className="w-full" asChild>
-              <a href={getLoginUrl()}>Get Started</a>
-            </Button>
-          </div>
-
-          {/* Pro Plan */}
-          <div className="bg-gradient-to-br from-indigo-600/50 to-cyan-600/50 border border-indigo-400/50 rounded-lg p-8 relative">
-            <div className="absolute top-0 right-0 bg-gradient-to-r from-indigo-500 to-cyan-500 text-white px-4 py-1 rounded-bl-lg rounded-tr-lg text-sm font-semibold">
-              Popular
-            </div>
-            <h3 className="text-2xl font-bold text-white mb-2">Pro</h3>
-            <p className="text-gray-200 mb-6">For serious creators</p>
-            <div className="text-3xl font-bold text-white mb-6">$29<span className="text-lg text-gray-300">/mo</span></div>
-            <ul className="space-y-3 mb-8 text-gray-200">
-              <li>✓ Unlimited chat messages</li>
-              <li>✓ Unlimited research queries</li>
-              <li>✓ 50 image generations/day</li>
-              <li>✓ 100MB file uploads</li>
-              <li>✓ 5 music/video generations/day</li>
-              <li>✓ 5 character memory slots</li>
-            </ul>
-            <Button className="w-full bg-indigo-600 hover:bg-indigo-700" asChild>
-              <a href={getLoginUrl()}>Start Free Trial</a>
-            </Button>
-          </div>
-
-          {/* Business Plan */}
-          <div className="bg-gradient-to-br from-indigo-900/50 to-cyan-900/50 border border-indigo-500/20 rounded-lg p-8">
-            <h3 className="text-2xl font-bold text-white mb-2">Business</h3>
-            <p className="text-gray-300 mb-6">For teams and enterprises</p>
-            <div className="text-3xl font-bold text-white mb-6">$99<span className="text-lg text-gray-300">/mo</span></div>
-            <ul className="space-y-3 mb-8 text-gray-300">
-              <li>✓ All Pro features</li>
-              <li>✓ Team collaboration (5 users)</li>
-              <li>✓ Shared workspaces</li>
-              <li>✓ 20 music/video generations/day</li>
-              <li>✓ Unlimited characters</li>
-              <li>✓ Priority support</li>
-            </ul>
-            <Button variant="outline" className="w-full" asChild>
-              <a href={getLoginUrl()}>Contact Sales</a>
-            </Button>
-          </div>
+          {[PLANS.free, PLANS.pro, PLANS.business].map((plan) => {
+            const featured = plan.id === "pro";
+            return (
+              <div
+                key={plan.id}
+                className={
+                  featured
+                    ? "bg-gradient-to-br from-indigo-600/50 to-cyan-600/50 border border-indigo-400/50 rounded-lg p-8 relative"
+                    : "bg-gradient-to-br from-indigo-900/50 to-cyan-900/50 border border-indigo-500/20 rounded-lg p-8"
+                }
+              >
+                {featured && (
+                  <div className="absolute top-0 right-0 bg-gradient-to-r from-indigo-500 to-cyan-500 text-white px-4 py-1 rounded-bl-lg rounded-tr-lg text-sm font-semibold">
+                    Popular
+                  </div>
+                )}
+                <h3 className="text-2xl font-bold text-white mb-2">{plan.name}</h3>
+                <p className={`${featured ? "text-gray-200" : "text-gray-300"} mb-6`}>{plan.description}</p>
+                <div className="text-3xl font-bold text-white mb-6">
+                  ${plan.price}
+                  <span className="text-lg text-gray-300">/mo</span>
+                </div>
+                <ul className={`space-y-3 mb-8 ${featured ? "text-gray-200" : "text-gray-300"}`}>
+                  {planFeatureList(plan).map((feature) => (
+                    <li key={feature}>✓ {feature}</li>
+                  ))}
+                </ul>
+                <Button
+                  variant={featured ? "default" : "outline"}
+                  className={featured ? "w-full bg-indigo-600 hover:bg-indigo-700" : "w-full"}
+                  asChild
+                >
+                  <a href={isAuthenticated ? "/settings" : getLoginUrl()}>
+                    {plan.price === 0 ? "Get Started" : `Choose ${plan.name}`}
+                  </a>
+                </Button>
+              </div>
+            );
+          })}
         </div>
       </section>
 

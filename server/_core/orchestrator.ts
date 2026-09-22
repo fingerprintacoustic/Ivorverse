@@ -12,6 +12,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { generateImage } from "./imageGeneration";
 import { enqueueJob } from "./jobs";
+import { consumeQuota, QuotaExceededError, refundQuota, type QuotaUser } from "./quota";
 import { setMemory } from "../db";
 
 let _client: Anthropic | null = null;
@@ -147,6 +148,8 @@ const TOOLS: Anthropic.ToolUnion[] = [
 export type OrchestratorContext = {
   projectId?: number;
   userId?: number;
+  /** Plan quotas are charged to this user for tool use (images, builds, songs) */
+  user?: QuotaUser;
 };
 
 async function executeTool(
@@ -155,19 +158,42 @@ async function executeTool(
   context: OrchestratorContext,
   jobIds: number[]
 ): Promise<string> {
-  const { projectId, userId } = context;
+  try {
+    return await executeToolUnchecked(name, input, context, jobIds);
+  } catch (error) {
+    // Over a plan limit: tell Claude so it can explain it to the user
+    if (error instanceof QuotaExceededError) return JSON.stringify({ error: error.message });
+    throw error;
+  }
+}
+
+async function executeToolUnchecked(
+  name: string,
+  input: Record<string, any>,
+  context: OrchestratorContext,
+  jobIds: number[]
+): Promise<string> {
+  const { projectId, userId, user } = context;
   switch (name) {
     case "generate_image": {
-      const { url } = await generateImage({ prompt: input.prompt });
-      return url
-        ? JSON.stringify({ imageUrl: url })
-        : JSON.stringify({ error: "Image generation failed to return a URL." });
+      if (!user) {
+        return JSON.stringify({ error: "Image generation isn't available in this context." });
+      }
+      const period = await consumeQuota(user, "imageGenerations");
+      try {
+        const { url } = await generateImage({ prompt: input.prompt });
+        if (!url) throw new Error("Image generation failed to return a URL.");
+        return JSON.stringify({ imageUrl: url });
+      } catch (error) {
+        await refundQuota(user.id, "imageGenerations", 1, period);
+        return JSON.stringify({ error: error instanceof Error ? error.message : "Image generation failed." });
+      }
     }
     // App builds and music take minutes — longer than the 60s a request
     // through Firebase Hosting may run — so these queue background jobs
     // (jobs.ts) and return at once; the chat UI polls them.
     case "build_app": {
-      if (!projectId || !userId) {
+      if (!projectId || !userId || !user) {
         return JSON.stringify({ error: "App building isn't available in this context." });
       }
       const description = String(input.description ?? "").trim();
@@ -175,21 +201,28 @@ async function executeTool(
         return JSON.stringify({ error: "Describe the app in more detail before building." });
       }
       const appType = ["website", "mobile", "saas"].includes(input.appType) ? input.appType : "website";
-      const job = await enqueueJob("app_build", userId, { projectId, appType, description });
+      const period = await consumeQuota(user, "appBuilds");
+      const job = await enqueueJob("app_build", userId, { projectId, appType, description }, { quota: "appBuilds", period });
       jobIds.push(job.id);
       return JSON.stringify({ status: "started", jobId: job.id });
     }
     case "generate_music": {
-      if (!userId) {
+      if (!userId || !user) {
         return JSON.stringify({ error: "Music generation isn't available in this context." });
       }
-      const job = await enqueueJob("music_generate", userId, {
-        projectId,
-        prompt: input.prompt,
-        lyrics: input.lyrics,
-        instrumental: input.instrumental,
-        durationSeconds: input.durationSeconds,
-      });
+      const period = await consumeQuota(user, "musicGenerations");
+      const job = await enqueueJob(
+        "music_generate",
+        userId,
+        {
+          projectId,
+          prompt: input.prompt,
+          lyrics: input.lyrics,
+          instrumental: input.instrumental,
+          durationSeconds: input.durationSeconds,
+        },
+        { quota: "musicGenerations", period }
+      );
       jobIds.push(job.id);
       return JSON.stringify({ status: "started", jobId: job.id });
     }

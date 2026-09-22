@@ -49,6 +49,12 @@ vi.mock("./_core/orchestrator", () => ({ runOrchestrator: llm }));
 vi.mock("./_core/imageGeneration", () => ({ generateImage: llm }));
 vi.mock("./_core/textToSpeech", async (orig) => ({ ...(await orig<any>()), generateSpeech: llm }));
 vi.mock("./_core/jobs", () => ({ enqueueJob: llm }));
+// Plan limits are tested in quota.test.ts; here they'd only get in the way
+vi.mock("./_core/quota", () => ({
+  consumeQuota: vi.fn(async () => null),
+  refundQuota: vi.fn(async () => {}),
+  getQuotaUsage: vi.fn(),
+}));
 
 const { appRouter } = await import("./routers");
 

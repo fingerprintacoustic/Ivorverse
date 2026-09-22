@@ -205,6 +205,8 @@ export interface Job {
   input: Record<string, any>;
   result?: Record<string, any> | null;
   error?: string | null;
+  /** Plan quota charged for this job; refunded if it fails (see quota.ts) */
+  charge?: { quota: string; amount: number; period: string } | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -275,6 +277,8 @@ export interface WorkflowRun {
   input: string | null;
   /** Snapshot of the workflow's steps at run time, with per-step results */
   steps: WorkflowRunStep[];
+  /** Month the run's agentRuns quota was charged in (for refunds) */
+  quotaPeriod?: string | null;
   completedAt?: Date | null;
   createdAt: Date;
   updatedAt: Date;
@@ -937,13 +941,18 @@ export async function updateAppProject(
 // Background Jobs (see server/_core/jobs.ts)
 // ---------------------------------------------------------------------------
 
-export async function createJob(userId: number, type: string, input: Record<string, any>) {
+export async function createJob(
+  userId: number,
+  type: string,
+  input: Record<string, any>,
+  charge?: Job["charge"]
+) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   return await createDoc<Job>(
     db,
     "jobs",
-    { userId, type, input, status: "queued", progress: 0, stage: "Queued" },
+    { userId, type, input, status: "queued", progress: 0, stage: "Queued", charge: charge ?? null },
     { createdAt: true, updatedAt: true }
   );
 }
@@ -1317,7 +1326,7 @@ export async function deleteWorkflow(workflowId: number) {
 }
 
 export async function createWorkflowRun(
-  data: Pick<WorkflowRun, "userId" | "workflowId" | "input" | "steps">
+  data: Pick<WorkflowRun, "userId" | "workflowId" | "input" | "steps" | "quotaPeriod">
 ) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");

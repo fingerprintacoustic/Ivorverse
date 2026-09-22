@@ -1,16 +1,44 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Progress } from "@/components/ui/progress";
+import { PLANS, planFeatureList } from "@shared/plans";
 import { trpc } from "@/lib/trpc";
 import { ExternalLink, Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
-// Keep in sync with server/products.ts SUBSCRIPTION_TIERS
-const PLANS = [
-  { id: "pro", name: "Pro", price: 29, blurb: "For serious creators" },
-  { id: "business", name: "Business", price: 99, blurb: "For teams and heavier use" },
-] as const;
+const PAID_PLANS = [PLANS.pro, PLANS.business];
+
+/** This month's usage against the plan's limits. */
+function UsageList() {
+  const { data: usage } = trpc.subscriptions.usage.useQuery();
+  if (!usage) return null;
+  if (usage.unlimited) {
+    return <p className="text-sm text-muted-foreground">Admin accounts aren't subject to plan limits.</p>;
+  }
+  return (
+    <div className="space-y-3">
+      <p className="text-sm font-medium">This month's usage</p>
+      {usage.items.map((item) => {
+        const unlimited = item.limit === -1;
+        const atLimit = !unlimited && item.used >= item.limit;
+        return (
+          <div key={item.key} className="space-y-1">
+            <div className="flex justify-between text-sm">
+              <span>{item.label}</span>
+              <span className={`tabular-nums ${atLimit ? "text-destructive font-medium" : "text-muted-foreground"}`}>
+                {unlimited ? `${item.used} · unlimited` : `${item.used} / ${item.limit}`}
+              </span>
+            </div>
+            {!unlimited && <Progress value={Math.min(100, (item.used / Math.max(1, item.limit)) * 100)} />}
+          </div>
+        );
+      })}
+      <p className="text-xs text-muted-foreground">Limits reset on the 1st of each month (UTC).</p>
+    </div>
+  );
+}
 
 /** Current plan, upgrade via Stripe Checkout, and Stripe's billing portal. */
 export function BillingCard() {
@@ -99,19 +127,24 @@ export function BillingCard() {
 
             {!isPaid && (
               <div className="grid gap-3 sm:grid-cols-2">
-                {PLANS.map((plan) => (
+                {PAID_PLANS.map((plan) => (
                   <div key={plan.id} className="border rounded-lg p-4 space-y-3">
                     <div>
                       <p className="font-semibold">{plan.name}</p>
-                      <p className="text-sm text-muted-foreground">{plan.blurb}</p>
+                      <p className="text-sm text-muted-foreground">{plan.description}</p>
                     </div>
+                    <ul className="text-xs text-muted-foreground space-y-0.5">
+                      {planFeatureList(plan).map((f) => (
+                        <li key={f}>✓ {f}</li>
+                      ))}
+                    </ul>
                     <p className="text-2xl font-bold">
                       ${plan.price}
                       <span className="text-sm font-normal text-muted-foreground">/mo</span>
                     </p>
                     <Button
                       className="w-full"
-                      onClick={() => checkout.mutate({ tierId: plan.id })}
+                      onClick={() => checkout.mutate({ tierId: plan.id as "pro" | "business" })}
                       disabled={checkout.isPending || awaitingUpgrade}
                     >
                       {checkout.isPending && checkout.variables?.tierId === plan.id ? (
@@ -123,6 +156,8 @@ export function BillingCard() {
                 ))}
               </div>
             )}
+
+            <UsageList />
 
             {history.data && history.data.length > 0 && (
               <div className="space-y-2">

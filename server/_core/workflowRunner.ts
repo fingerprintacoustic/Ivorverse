@@ -14,6 +14,7 @@ import { z } from "zod";
 import * as db from "../db";
 import { runAgent } from "./agentRunner";
 import { enqueueJob, type JobContext } from "./jobs";
+import { refundQuota } from "./quota";
 
 export const MAX_WORKFLOW_STEPS = 8;
 // Earlier outputs passed to later steps are capped to keep prompts bounded
@@ -70,16 +71,19 @@ function buildStepPrompt(
 }
 
 /** Start a run of a workflow. Caller must have verified ownership. */
+/** Caller must have charged definition.steps.length agentRuns (consumeQuota) in `quotaPeriod`. */
 export async function startWorkflowRun(
   workflow: db.Workflow,
   definition: WorkflowDefinition,
   userId: number,
-  input: string | null
+  input: string | null,
+  quotaPeriod: string | null = null
 ) {
   const run = await db.createWorkflowRun({
     userId,
     workflowId: workflow.id,
     input,
+    quotaPeriod,
     steps: definition.steps.map((s) => ({ name: s.name, status: "pending" as const })),
   });
   await queueStep(run, 0);
@@ -143,6 +147,8 @@ export async function runWorkflowStepJob(input: { runId: number; stepIndex: numb
       { status: "failed", error: error instanceof Error ? error.message : String(error) },
       { status: "failed", completedAt: new Date() }
     );
+    // Each step was charged one agent run up front: refund this one and the rest
+    await refundQuota(ctx.userId, "agentRuns", steps.length - input.stepIndex, run.quotaPeriod ?? null);
     throw error;
   }
 }

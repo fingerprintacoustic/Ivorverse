@@ -14,7 +14,9 @@
  *   - locally (plain Express, no triggers): runJob(id) starts in-process
  * The client polls jobs.get until status is completed/failed.
  */
+import type { QuotaKey } from "@shared/plans";
 import * as db from "../db";
+import { refundQuota } from "./quota";
 
 export type JobContext = {
   jobId: number;
@@ -40,8 +42,22 @@ export type JobType = keyof typeof HANDLERS;
 // on the Functions emulator; in both, the Firestore trigger runs the job.
 const HAS_JOB_TRIGGER = Boolean(process.env.K_SERVICE || process.env.FUNCTION_TARGET);
 
-export async function enqueueJob(type: JobType, userId: number, input: Record<string, any>) {
-  const job = await db.createJob(userId, type, input);
+/**
+ * Queue a job. Pass `charge` when plan quota was consumed for it
+ * (consumeQuota's period): it's refunded automatically if the job fails.
+ */
+export async function enqueueJob(
+  type: JobType,
+  userId: number,
+  input: Record<string, any>,
+  charge?: { quota: QuotaKey; amount?: number; period: string | null }
+) {
+  const job = await db.createJob(
+    userId,
+    type,
+    input,
+    charge?.period ? { quota: charge.quota, amount: charge.amount ?? 1, period: charge.period } : null
+  );
   if (!HAS_JOB_TRIGGER) {
     void runJob(job.id).catch((error) => console.error(`[Jobs] Job ${job.id} crashed:`, error));
   }
@@ -72,6 +88,11 @@ export async function runJob(jobId: number): Promise<void> {
     await db.updateJob(jobId, { status: "completed", progress: 100, stage: "Done", result });
   } catch (error) {
     console.error(`[Jobs] Job ${jobId} (${job.type}) failed:`, error);
+    if (job.charge) {
+      await refundQuota(job.userId, job.charge.quota as QuotaKey, job.charge.amount, job.charge.period).catch((e) =>
+        console.error(`[Jobs] Refund for job ${jobId} failed:`, e)
+      );
+    }
     await db.updateJob(jobId, {
       status: "failed",
       error: error instanceof Error ? error.message : String(error),

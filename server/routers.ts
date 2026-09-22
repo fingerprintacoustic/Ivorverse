@@ -12,6 +12,8 @@ import { transcribeAudio } from "./_core/voiceTranscription";
 import { generateSpeech, TTS_MAX_CHARS, TTS_VOICES } from "./_core/textToSpeech";
 import { processVoiceTurn } from "./_core/voiceConversation";
 import { enqueueJob } from "./_core/jobs";
+import { consumeQuota, getQuotaUsage, refundQuota } from "./_core/quota";
+import type { QuotaKey } from "@shared/plans";
 import { AppTypeSchema } from "./_core/appGeneration";
 import { AGENT_TOOLS, DEFAULT_AGENT_TOOLS } from "./_core/agentRunner";
 import {
@@ -77,6 +79,18 @@ async function requireOwnedAgents(definition: WorkflowDefinition, userId: number
     throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
   }
 }
+
+/**
+ * A protected procedure that charges one unit of a plan quota before running
+ * and refunds it if the procedure fails (see quota.ts).
+ */
+const quotaProcedure = (quota: QuotaKey) =>
+  protectedProcedure.use(async ({ ctx, next }) => {
+    const period = await consumeQuota(ctx.user, quota);
+    const result = await next();
+    if (!result.ok) await refundQuota(ctx.user.id, quota, 1, period);
+    return result;
+  });
 
 export const appRouter = router({
   system: systemRouter,
@@ -364,7 +378,7 @@ export const appRouter = router({
 
   // Chat
   chat: router({
-    sendMessage: protectedProcedure
+    sendMessage: quotaProcedure("chatMessages")
       .input(
         z.object({
           projectId: z.number(),
@@ -411,7 +425,7 @@ You have a web_search tool available — use it whenever the user asks about cur
         const result = await runOrchestrator(
           systemPrompt + memoryContext + "\n\nIMPORTANT: Maintain context from the conversation history. Understand pronouns and references to previous messages.",
           conversationHistory,
-          { projectId: input.projectId, userId: ctx.user.id }
+          { projectId: input.projectId, userId: ctx.user.id, user: ctx.user }
         );
 
         const assistantMessage = result.message;
@@ -472,7 +486,7 @@ You have a web_search tool available — use it whenever the user asks about cur
         return { url, key };
       }),
 
-    generateReport: protectedProcedure
+    generateReport: quotaProcedure("researchReports")
       .input(
         z.object({
           projectId: z.number(),
@@ -500,7 +514,7 @@ You have a web_search tool available — use it whenever the user asks about cur
 
   // Research
   research: router({
-    search: protectedProcedure
+    search: quotaProcedure("researchReports")
       .input(z.object({ query: z.string() }))
       .mutation(async ({ ctx, input }) => {
         const { runOrchestrator } = await import("./_core/orchestrator");
@@ -514,7 +528,7 @@ You have a web_search tool available — use it whenever the user asks about cur
         return { summary: result.message };
       }),
 
-    generateReport: protectedProcedure
+    generateReport: quotaProcedure("researchReports")
       .input(
         z.object({
           projectId: z.number(),
@@ -620,7 +634,8 @@ You have a web_search tool available — use it whenever the user asks about cur
       )
       .mutation(async ({ ctx, input }) => {
         await requireOwnedProject(input.projectId, ctx.user.id);
-        const job = await enqueueJob("music_generate", ctx.user.id, input);
+        const period = await consumeQuota(ctx.user, "musicGenerations");
+        const job = await enqueueJob("music_generate", ctx.user.id, input, { quota: "musicGenerations", period });
         return { jobId: job.id };
       }),
   }),
@@ -684,21 +699,27 @@ You have a web_search tool available — use it whenever the user asks about cur
           throw new Error("Generate scenes before generating images.");
         }
 
-        const imageUrls: string[] = [];
-        for (const scene of scenes) {
-          const { url } = await generateImage({ prompt: scene });
-          if (url) {
-            imageUrls.push(url);
-            await db.createFile(
-              ctx.user.id,
-              `scene-${Date.now()}.png`,
-              `video-scenes/${ctx.user.id}/${Date.now()}`,
-              url,
-              "image/png",
-              undefined,
-              input.projectId
-            );
-          }
+        // One image per scene. Generated in parallel: one at a time could run
+        // past the 60s a request through Firebase Hosting is allowed.
+        const period = await consumeQuota(ctx.user, "imageGenerations", scenes.length);
+        const results = await Promise.allSettled(scenes.map((scene) => generateImage({ prompt: scene })));
+        const imageUrls = results
+          .map((r) => (r.status === "fulfilled" ? r.value.url : undefined))
+          .filter((url): url is string => Boolean(url));
+        await refundQuota(ctx.user.id, "imageGenerations", scenes.length - imageUrls.length, period);
+        if (imageUrls.length === 0) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Image generation failed. Please try again." });
+        }
+        for (const url of imageUrls) {
+          await db.createFile(
+            ctx.user.id,
+            `scene-${Date.now()}.png`,
+            `video-scenes/${ctx.user.id}/${Date.now()}`,
+            url,
+            "image/png",
+            undefined,
+            input.projectId
+          );
         }
 
         await db.updateVideoProject(input.projectId, ctx.user.id, { imageUrls });
@@ -723,7 +744,8 @@ You have a web_search tool available — use it whenever the user asks about cur
         if (imageUrls.length === 0) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "Generate scene images before assembling the video." });
         }
-        const job = await enqueueJob("video_assemble", ctx.user.id, input);
+        const period = await consumeQuota(ctx.user, "videoGenerations");
+        const job = await enqueueJob("video_assemble", ctx.user.id, input, { quota: "videoGenerations", period });
         return { jobId: job.id };
       }),
 
@@ -736,7 +758,7 @@ You have a web_search tool available — use it whenever the user asks about cur
 
   // Image Studio
   image: router({
-    generate: protectedProcedure
+    generate: quotaProcedure("imageGenerations")
       .input(z.object({ projectId: z.number(), prompt: z.string() }))
       .mutation(async ({ ctx, input }) => {
         await requireOwnedProject(input.projectId, ctx.user.id);
@@ -757,7 +779,7 @@ You have a web_search tool available — use it whenever the user asks about cur
         return { url: imageUrl };
       }),
 
-    generateLogo: protectedProcedure
+    generateLogo: quotaProcedure("imageGenerations")
       .input(z.object({ projectId: z.number(), companyName: z.string() }))
       .mutation(async ({ ctx, input }) => {
         await requireOwnedProject(input.projectId, ctx.user.id);
@@ -769,7 +791,7 @@ You have a web_search tool available — use it whenever the user asks about cur
         return { url };
       }),
 
-    generateThumbnail: protectedProcedure
+    generateThumbnail: quotaProcedure("imageGenerations")
       .input(z.object({ projectId: z.number(), title: z.string() }))
       .mutation(async ({ ctx, input }) => {
         await requireOwnedProject(input.projectId, ctx.user.id);
@@ -781,7 +803,7 @@ You have a web_search tool available — use it whenever the user asks about cur
         return { url };
       }),
 
-    generateGraphic: protectedProcedure
+    generateGraphic: quotaProcedure("imageGenerations")
       .input(z.object({ projectId: z.number(), description: z.string() }))
       .mutation(async ({ ctx, input }) => {
         await requireOwnedProject(input.projectId, ctx.user.id);
@@ -816,7 +838,7 @@ You have a web_search tool available — use it whenever the user asks about cur
         return { url, key };
       }),
 
-    transcribe: protectedProcedure
+    transcribe: quotaProcedure("voiceRequests")
       .input(z.object({ audioUrl: z.string().url(), language: z.string().optional() }))
       .mutation(async ({ ctx, input }) => {
         const result = await transcribeAudio({
@@ -836,7 +858,7 @@ You have a web_search tool available — use it whenever the user asks about cur
         return { text: result.text, language: result.language, duration: result.duration };
       }),
 
-    generateSpeech: protectedProcedure
+    generateSpeech: quotaProcedure("voiceRequests")
       .input(
         z.object({
           projectId: z.number().optional(),
@@ -859,7 +881,7 @@ You have a web_search tool available — use it whenever the user asks about cur
 
     // One turn of a spoken conversation: the client records, uploads via
     // uploadAudio, calls this, plays replyAudioUrl, and keeps the history.
-    converse: protectedProcedure
+    converse: quotaProcedure("voiceRequests")
       .input(
         z.object({
           audioUrl: z.string().url(),
@@ -917,7 +939,8 @@ You have a web_search tool available — use it whenever the user asks about cur
       .mutation(async ({ ctx, input }) => {
         const project = await db.getProjectById(input.projectId, ctx.user.id);
         if (!project) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found" });
-        const job = await enqueueJob("app_build", ctx.user.id, input);
+        const period = await consumeQuota(ctx.user, "appBuilds");
+        const job = await enqueueJob("app_build", ctx.user.id, input, { quota: "appBuilds", period });
         return { jobId: job.id };
       }),
 
@@ -960,6 +983,7 @@ You have a web_search tool available — use it whenever the user asks about cur
         })
       )
       .mutation(async ({ ctx, input }) => {
+        await consumeQuota(ctx.user, "characters");
         const result = await db.createCharacter(
           ctx.user.id,
           input.name,
@@ -1045,6 +1069,8 @@ You have a web_search tool available — use it whenever the user asks about cur
     getCurrent: protectedProcedure.query(async ({ ctx }) => {
       return await db.getOrCreateSubscription(ctx.user.id);
     }),
+    // This month's usage against the plan's limits
+    usage: protectedProcedure.query(async ({ ctx }) => getQuotaUsage(ctx.user)),
     // There is deliberately no client-callable "upgrade": the tier changes
     // only when Stripe confirms payment (handleStripeWebhook). A previous
     // subscriptions.upgrade let any user set their own tier for free.
@@ -1147,7 +1173,8 @@ You have a web_search tool available — use it whenever the user asks about cur
             throw new TRPCError({ code: "CONFLICT", message: "This task is already running" });
           }
         }
-        const job = await enqueueJob("agent_task", ctx.user.id, { taskId: task.id });
+        const period = await consumeQuota(ctx.user, "agentRuns");
+        const job = await enqueueJob("agent_task", ctx.user.id, { taskId: task.id }, { quota: "agentRuns", period });
         await db.updateTask(task.id, { status: "in_progress", progress: 0, jobId: job.id, error: null });
         return { jobId: job.id };
       }),
@@ -1236,7 +1263,9 @@ You have a web_search tool available — use it whenever the user asks about cur
             message: "This workflow uses an old definition format. Edit it to add steps before running.",
           });
         }
-        const run = await startWorkflowRun(workflow, definition, ctx.user.id, input.input?.trim() || null);
+        // Each step is an agent run; charge them all up front
+        const period = await consumeQuota(ctx.user, "agentRuns", definition.steps.length);
+        const run = await startWorkflowRun(workflow, definition, ctx.user.id, input.input?.trim() || null, period);
         return { runId: run.id };
       }),
 

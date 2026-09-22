@@ -3,8 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const jobs = new Map<number, any>();
 
 vi.mock("./db", () => ({
-  createJob: vi.fn(async (userId: number, type: string, input: any) => {
-    const job = { id: jobs.size + 1, userId, type, input, status: "queued", progress: 0, stage: "Queued" };
+  createJob: vi.fn(async (userId: number, type: string, input: any, charge?: any) => {
+    const job = { id: jobs.size + 1, userId, type, input, status: "queued", progress: 0, stage: "Queued", charge };
     jobs.set(job.id, job);
     return job;
   }),
@@ -20,6 +20,9 @@ vi.mock("./db", () => ({
   }),
 }));
 
+const refundQuota = vi.fn(async () => {});
+vi.mock("./_core/quota", () => ({ refundQuota }));
+
 const appBuild = vi.fn();
 vi.mock("./_core/appGeneration", () => ({ runAppBuildJob: appBuild }));
 vi.mock("./_core/videoGeneration", () => ({ runVideoAssembleJob: vi.fn() }));
@@ -32,6 +35,7 @@ describe("background jobs", () => {
   beforeEach(() => {
     jobs.clear();
     appBuild.mockReset();
+    refundQuota.mockClear();
   });
 
   it("runs the handler and stores its result", async () => {
@@ -59,6 +63,24 @@ describe("background jobs", () => {
     await runJob(job.id);
 
     expect(jobs.get(job.id)).toMatchObject({ status: "failed", error: "sandbox exploded" });
+  });
+
+  it("refunds the plan quota charged for a job that fails", async () => {
+    appBuild.mockRejectedValue(new Error("sandbox exploded"));
+    const job = await enqueueJob("app_build", 7, {}, { quota: "appBuilds", period: "2026-09" });
+
+    await runJob(job.id);
+
+    expect(refundQuota).toHaveBeenCalledWith(7, "appBuilds", 1, "2026-09");
+  });
+
+  it("keeps the charge when the job succeeds", async () => {
+    appBuild.mockResolvedValue({});
+    const job = await enqueueJob("app_build", 7, {}, { quota: "appBuilds", period: "2026-09" });
+
+    await runJob(job.id);
+
+    expect(refundQuota).not.toHaveBeenCalled();
   });
 
   it("ignores duplicate deliveries of the same job", async () => {
