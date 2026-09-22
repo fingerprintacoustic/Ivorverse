@@ -10,6 +10,9 @@ vi.mock("./db", () => {
       projectId === 1 && userId === 1 ? { id: 1, userId: 1, type: "chat" } : undefined
     ),
     getAgents: vi.fn(async () => []),
+    getCharacterById: vi.fn(async (characterId: number, userId: number) =>
+      characterId === 1 && userId === 1 ? { id: 1, userId: 1 } : undefined
+    ),
     updateTaskStatus: vi.fn(async (_taskId: number, userId: number) => userId === 1),
   };
   return new Proxy(fns, {
@@ -61,6 +64,8 @@ const attempts: Record<string, () => Promise<unknown>> = {
     intruder.appBuilder.generate({ projectId: OTHER_USERS_PROJECT, appType: "website", description: "a todo app" }),
   "agents.updateTaskStatus": () => intruder.agents.updateTaskStatus({ taskId: 1, status: "completed" }),
   "agents.createTask": () => intruder.agents.createTask({ title: "x", agentId: 1 }),
+  "characters.uploadMedia": () =>
+    intruder.characters.uploadMedia({ characterId: 1, kind: "face", fileData: "", mimeType: "image/png" }),
 };
 
 describe("cross-user access is rejected", () => {
@@ -74,4 +79,12 @@ describe("cross-user access is rejected", () => {
       expect(dbCalls).toEqual([]);
     });
   }
+});
+
+describe("character updates", () => {
+  it("rejects fields outside name/description/personality (e.g. userId)", async () => {
+    await expect(
+      intruder.characters.update({ characterId: 5, updates: { userId: 1 } as any })
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
 });

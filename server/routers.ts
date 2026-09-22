@@ -928,11 +928,57 @@ You have a web_search tool available — use it whenever the user asks about cur
       .input(
         z.object({
           characterId: z.number(),
-          updates: z.record(z.string(), z.any()),
+          // Explicit fields only: this used to accept any record and write it
+          // straight to Firestore, so a caller could overwrite userId (moving
+          // the character into another account) or any other field.
+          updates: z
+            .object({
+              name: z.string().trim().min(1).max(100),
+              description: z.string().max(2000),
+              personality: z.record(z.string(), z.any()),
+            })
+            .partial()
+            .strict(),
         })
       )
       .mutation(async ({ ctx, input }) => {
         return await db.updateCharacter(input.characterId, ctx.user.id, input.updates);
+      }),
+
+    // Face image or voice sample, base64-encoded from the browser
+    uploadMedia: protectedProcedure
+      .input(
+        z.object({
+          characterId: z.number(),
+          kind: z.enum(["face", "voice"]),
+          fileData: z.string().max(10_000_000), // base64 of ~7.5MB
+          mimeType: z.string(),
+          filename: z.string().max(200).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const character = await db.getCharacterById(input.characterId, ctx.user.id);
+        if (!character) throw new TRPCError({ code: "NOT_FOUND", message: "Character not found" });
+
+        const expected = input.kind === "face" ? /^image\// : /^(audio|video)\//;
+        if (!expected.test(input.mimeType)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: input.kind === "face" ? "Face must be an image file" : "Voice sample must be an audio file",
+          });
+        }
+
+        const { url, key } = await storagePut(
+          `${ctx.user.id}/characters/${input.characterId}/${input.filename || input.kind}`,
+          Buffer.from(input.fileData, "base64"),
+          input.mimeType
+        );
+        await db.updateCharacter(
+          input.characterId,
+          ctx.user.id,
+          input.kind === "face" ? { faceImageUrl: url, faceImageKey: key } : { voiceUrl: url, voiceKey: key }
+        );
+        return { url };
       }),
 
     delete: protectedProcedure

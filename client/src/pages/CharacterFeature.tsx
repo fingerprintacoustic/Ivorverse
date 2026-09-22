@@ -7,8 +7,97 @@ import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { trpc } from "@/lib/trpc";
-import { Plus, User, Upload, Loader2, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { blobToBase64, useAudioRecorder } from "@/hooks/useAudioRecorder";
+import { Plus, User, Upload, Loader2, Trash2, Mic, Square } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
+
+const MAX_UPLOAD_BYTES = 7.5 * 1024 * 1024; // matches characters.uploadMedia's cap
+
+/** Upload (or, for voice, record) a character's face image or voice sample. */
+function MediaUploadButton({
+  characterId,
+  kind,
+  onUploaded,
+}: {
+  characterId: number;
+  kind: "face" | "voice";
+  onUploaded: () => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const recorder = useAudioRecorder();
+  const uploadMutation = trpc.characters.uploadMedia.useMutation();
+
+  const upload = async (blob: Blob, filename?: string) => {
+    if (blob.size > MAX_UPLOAD_BYTES) {
+      toast.error("File is larger than 7.5MB");
+      return;
+    }
+    try {
+      await uploadMutation.mutateAsync({
+        characterId,
+        kind,
+        fileData: await blobToBase64(blob),
+        mimeType: blob.type || (kind === "face" ? "image/png" : "audio/webm"),
+        filename,
+      });
+      toast.success(kind === "face" ? "Face image saved" : "Voice sample saved");
+      onUploaded();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Upload failed");
+    }
+  };
+
+  const handleRecord = async () => {
+    try {
+      if (recorder.isRecording) await upload(await recorder.stop());
+      else await recorder.start();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Recording failed");
+    }
+  };
+
+  const busy = uploadMutation.isPending;
+  return (
+    <div className={kind === "voice" ? "grid gap-2 sm:grid-cols-2" : ""}>
+      <Button className="w-full" onClick={() => inputRef.current?.click()} disabled={busy || recorder.isRecording}>
+        {busy ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Upload className="w-4 h-4 mr-2" />}
+        {kind === "face" ? "Upload Face Image" : "Upload Voice Sample"}
+      </Button>
+      {kind === "voice" && (
+        <Button
+          className="w-full"
+          variant={recorder.isRecording ? "destructive" : "outline"}
+          onClick={handleRecord}
+          disabled={busy}
+        >
+          {recorder.isRecording ? (
+            <>
+              <Square className="w-4 h-4 mr-2" />
+              Stop and save ({recorder.elapsedSeconds}s)
+            </>
+          ) : (
+            <>
+              <Mic className="w-4 h-4 mr-2" />
+              Record Sample
+            </>
+          )}
+        </Button>
+      )}
+      <input
+        ref={inputRef}
+        type="file"
+        accept={kind === "face" ? "image/*" : "audio/*"}
+        className="hidden"
+        onChange={async (e) => {
+          const file = e.target.files?.[0];
+          e.target.value = "";
+          if (file) await upload(file, file.name);
+        }}
+      />
+    </div>
+  );
+}
 
 export default function CharacterFeature() {
   const [characterName, setCharacterName] = useState("");
@@ -16,6 +105,7 @@ export default function CharacterFeature() {
   const [selectedCharacter, setSelectedCharacter] = useState<number | null>(null);
   const [characterDescription, setCharacterDescription] = useState("");
   const [voiceType, setVoiceType] = useState("neutral");
+  const [editDescription, setEditDescription] = useState("");
 
   const { data: characters, refetch } = trpc.characters.list.useQuery();
   const createCharacterMutation = trpc.characters.create.useMutation({
@@ -46,6 +136,7 @@ export default function CharacterFeature() {
     await createCharacterMutation.mutateAsync({
       name: characterName,
       description: characterDescription,
+      personality: { voiceType },
     });
   };
 
@@ -56,6 +147,10 @@ export default function CharacterFeature() {
   };
 
   const currentCharacter = characters?.find((c) => c.id === selectedCharacter);
+
+  useEffect(() => {
+    setEditDescription(currentCharacter?.description ?? "");
+  }, [currentCharacter?.id, currentCharacter?.description]);
 
   return (
     <DashboardLayout>
@@ -193,18 +288,45 @@ export default function CharacterFeature() {
                 </CardHeader>
                 <CardContent>
                   <Tabs defaultValue="profile" className="w-full">
-                    <TabsList className="grid w-full grid-cols-4">
+                    <TabsList className="grid w-full grid-cols-3">
                       <TabsTrigger value="profile">Profile</TabsTrigger>
                       <TabsTrigger value="face">Face</TabsTrigger>
                       <TabsTrigger value="voice">Voice</TabsTrigger>
-                      <TabsTrigger value="usage">Usage</TabsTrigger>
                     </TabsList>
 
                     <TabsContent value="profile" className="space-y-4">
                       <div className="space-y-2">
-                        <label className="text-sm font-medium">Description</label>
-                        <p className="text-sm text-muted-foreground">
-                          {currentCharacter.description || "No description"}
+                        <label className="text-sm font-medium" htmlFor="character-description">
+                          Description
+                        </label>
+                        <Textarea
+                          id="character-description"
+                          value={editDescription}
+                          onChange={(e) => setEditDescription(e.target.value)}
+                          placeholder="Appearance, personality, backstory..."
+                          maxLength={2000}
+                          rows={4}
+                        />
+                        <Button
+                          size="sm"
+                          disabled={
+                            updateCharacterMutation.isPending ||
+                            editDescription === (currentCharacter.description ?? "")
+                          }
+                          onClick={() =>
+                            updateCharacterMutation.mutate(
+                              { characterId: currentCharacter.id, updates: { description: editDescription } },
+                              { onSuccess: () => toast.success("Description saved") }
+                            )
+                          }
+                        >
+                          {updateCharacterMutation.isPending ? "Saving..." : "Save Description"}
+                        </Button>
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium">Voice Type</label>
+                        <p className="text-sm text-muted-foreground capitalize">
+                          {currentCharacter.personality?.voiceType ?? "Not set"}
                         </p>
                       </div>
                       <div className="space-y-2">
@@ -216,50 +338,34 @@ export default function CharacterFeature() {
                     </TabsContent>
 
                     <TabsContent value="face" className="space-y-4">
-                      <div className="border-2 border-dashed rounded-lg aspect-square flex items-center justify-center bg-muted">
-                        <div className="text-center">
-                          <User className="w-12 h-12 text-muted-foreground mx-auto mb-2" />
-                          <p className="text-sm text-muted-foreground">No face image uploaded</p>
+                      {currentCharacter.faceImageUrl ? (
+                        <img
+                          src={currentCharacter.faceImageUrl}
+                          alt={currentCharacter.name + " face"}
+                          className="rounded-lg aspect-square w-full object-cover border"
+                        />
+                      ) : (
+                        <div className="border-2 border-dashed rounded-lg aspect-square flex items-center justify-center bg-muted">
+                          <div className="text-center">
+                            <User className="w-12 h-12 text-muted-foreground mx-auto mb-2" />
+                            <p className="text-sm text-muted-foreground">No face image uploaded</p>
+                          </div>
                         </div>
-                      </div>
-                      <Button className="w-full">
-                        <Upload className="w-4 h-4 mr-2" />
-                        Upload Face Image
-                      </Button>
+                      )}
+                      <MediaUploadButton characterId={currentCharacter.id} kind="face" onUploaded={refetch} />
                     </TabsContent>
 
                     <TabsContent value="voice" className="space-y-4">
                       <div className="bg-muted p-4 rounded-lg">
-                        <p className="text-sm text-muted-foreground mb-4">
-                          Voice sample (if available)
-                        </p>
-                        <audio controls className="w-full">
-                          <source src="" type="audio/mpeg" />
-                          Your browser does not support the audio element.
-                        </audio>
+                        {currentCharacter.voiceUrl ? (
+                          <audio controls src={currentCharacter.voiceUrl} className="w-full" />
+                        ) : (
+                          <p className="text-sm text-muted-foreground">No voice sample yet</p>
+                        )}
                       </div>
-                      <Button className="w-full">
-                        <Upload className="w-4 h-4 mr-2" />
-                        Upload Voice Sample
-                      </Button>
+                      <MediaUploadButton characterId={currentCharacter.id} kind="voice" onUploaded={refetch} />
                     </TabsContent>
 
-                    <TabsContent value="usage" className="space-y-4">
-                      <div className="space-y-3">
-                        <div className="border rounded-lg p-3">
-                          <p className="text-sm font-medium">Projects Using This Character</p>
-                          <p className="text-xs text-muted-foreground mt-1">
-                            0 projects
-                          </p>
-                        </div>
-                        <div className="border rounded-lg p-3">
-                          <p className="text-sm font-medium">Last Used</p>
-                          <p className="text-xs text-muted-foreground mt-1">
-                            Never
-                          </p>
-                        </div>
-                      </div>
-                    </TabsContent>
                   </Tabs>
                 </CardContent>
               </>
