@@ -189,10 +189,20 @@ function getFileExtension(mimeType: string): string {
     'audio/wave': 'wav',
     'audio/ogg': 'ogg',
     'audio/m4a': 'm4a',
+    'audio/x-m4a': 'm4a',
     'audio/mp4': 'm4a',
+    'audio/flac': 'flac',
+    'audio/x-flac': 'flac',
+    'video/webm': 'webm',
+    'video/mp4': 'mp4',
   };
-  
-  return mimeToExt[mimeType] || 'audio';
+
+  // Whisper infers the format from the filename extension, and browsers'
+  // MediaRecorder reports types with parameters ("audio/webm;codecs=opus"),
+  // so strip those before looking up — otherwise the upload is named
+  // "audio.audio" and rejected.
+  const baseType = mimeType.split(";")[0].trim().toLowerCase();
+  return mimeToExt[baseType] || 'mp3';
 }
 
 /**

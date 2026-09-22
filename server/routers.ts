@@ -8,6 +8,8 @@ import { invokeLLM } from "./_core/llm";
 import { storagePut } from "./storage";
 import { generateImage } from "./_core/imageGeneration";
 import { transcribeAudio } from "./_core/voiceTranscription";
+import { generateSpeech, TTS_MAX_CHARS, TTS_VOICES } from "./_core/textToSpeech";
+import { processVoiceTurn } from "./_core/voiceConversation";
 import { stripeRouter } from "./stripe";
 import { TRPCError } from "@trpc/server";
 import { checkRateLimit, getRateLimitKey, AUTH_RATE_LIMITS } from "./_core/rateLimiter";
@@ -745,27 +747,97 @@ You have a web_search tool available — use it whenever the user asks about cur
 
   // Voice Studio
   voice: router({
+    // Recorded (MediaRecorder) or picked audio arrives base64-encoded; it's
+    // stored first because Whisper transcription works from a URL.
+    uploadAudio: protectedProcedure
+      .input(
+        z.object({
+          fileData: z.string().max(10_000_000), // base64 of ~7.5MB of audio
+          mimeType: z.string().regex(/^(audio|video)\//),
+          filename: z.string().max(200).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const buffer = Buffer.from(input.fileData, "base64");
+        const { url, key } = await storagePut(
+          `${ctx.user.id}/voice/${input.filename || "recording"}`,
+          buffer,
+          input.mimeType
+        );
+        return { url, key };
+      }),
+
     transcribe: protectedProcedure
-      .input(z.object({ audioUrl: z.string(), language: z.string().optional() }))
+      .input(z.object({ audioUrl: z.string().url(), language: z.string().optional() }))
       .mutation(async ({ ctx, input }) => {
         const result = await transcribeAudio({
           audioUrl: input.audioUrl,
-          language: input.language || "en",
+          language: input.language,
         });
 
-        await db.trackUsage(ctx.user.id, "voice");
+        // Previously an error result was swallowed and returned as empty text
+        if ("error" in result) {
+          throw new TRPCError({
+            code: result.code === "SERVICE_ERROR" ? "INTERNAL_SERVER_ERROR" : "BAD_REQUEST",
+            message: result.details ? `${result.error}: ${result.details}` : result.error,
+          });
+        }
 
-        const text = (result && 'text' in result) ? result.text : "";
-        return { text, language: "en" };
+        await db.trackUsage(ctx.user.id, "voice");
+        return { text: result.text, language: result.language, duration: result.duration };
       }),
 
     generateSpeech: protectedProcedure
-      .input(z.object({ projectId: z.number(), text: z.string() }))
+      .input(
+        z.object({
+          projectId: z.number().optional(),
+          text: z.string().trim().min(1).max(TTS_MAX_CHARS),
+          voice: z.enum(TTS_VOICES).optional(),
+          instructions: z.string().max(500).optional(),
+        })
+      )
       .mutation(async ({ ctx, input }) => {
-        // This would integrate with a TTS API
+        const { url } = await generateSpeech({
+          text: input.text,
+          userId: ctx.user.id,
+          voice: input.voice,
+          instructions: input.instructions,
+        });
         await db.trackUsage(ctx.user.id, "voice");
+        return { audioUrl: url };
+      }),
 
-        return { audioUrl: "https://example.com/audio.mp3" };
+    // One turn of a spoken conversation: the client records, uploads via
+    // uploadAudio, calls this, plays replyAudioUrl, and keeps the history.
+    converse: protectedProcedure
+      .input(
+        z.object({
+          audioUrl: z.string().url(),
+          history: z
+            .array(z.object({ role: z.enum(["user", "assistant"]), content: z.string().max(4000) }))
+            .max(20)
+            .default([]),
+          voice: z.enum(TTS_VOICES).optional(),
+          language: z.string().optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        try {
+          const result = await processVoiceTurn({
+            audioUrl: input.audioUrl,
+            userId: ctx.user.id,
+            history: input.history,
+            voice: input.voice,
+            language: input.language,
+          });
+          await db.trackUsage(ctx.user.id, "voice");
+          return result;
+        } catch (error) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: error instanceof Error ? error.message : "Voice conversation failed",
+          });
+        }
       }),
   }),
 
