@@ -1,6 +1,7 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import DashboardLayout from "@/components/DashboardLayout";
 import { AIChatBox, Message } from "@/components/AIChatBox";
+import { JobCard } from "@/components/JobCard";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -98,6 +99,10 @@ export default function ChatFeature() {
       .map((msg) => ({
         role: msg.role as "user" | "assistant" | "system",
         content: msg.content,
+        // App builds / songs the assistant started — live progress + results
+        attachments: msg.jobIds?.length
+          ? msg.jobIds.map((jobId) => <JobCard key={jobId} jobId={jobId} />)
+          : undefined,
       }));
   }, [chatMessages]);
 

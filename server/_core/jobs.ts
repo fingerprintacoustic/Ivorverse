@@ -4,7 +4,8 @@
  * Why this exists: in production every /api call goes Firebase Hosting →
  * the `api` Cloud Function, and Hosting cuts proxied requests off at 60s
  * (the function itself is also configured for 60s). App builds and video
- * renders take minutes, so running them inside a tRPC mutation silently
+ * renders take minutes (and song generation can take over a minute), so
+ * running them inside a tRPC mutation silently
  * died mid-way in production while working fine locally.
  *
  * Flow: a procedure calls enqueueJob() → a `jobs/{id}` doc is written →
@@ -27,6 +28,7 @@ type JobHandler = (input: any, ctx: JobContext) => Promise<Record<string, any>>;
 const HANDLERS: Record<string, () => Promise<JobHandler>> = {
   app_build: async () => (await import("./appGeneration")).runAppBuildJob,
   video_assemble: async () => (await import("./videoGeneration")).runVideoAssembleJob,
+  music_generate: async () => (await import("./musicGeneration")).runMusicGenerateJob,
 };
 
 export type JobType = keyof typeof HANDLERS;

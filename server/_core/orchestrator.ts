@@ -4,15 +4,14 @@
  * things like web search or code execution. Replaces the Forge-proxied
  * invokeLLM() for the main chat assistant.
  *
- * Today this wires up one tool (image generation, via OpenAI). Music
- * generation isn't wired in as a tool yet — see musicGeneration.ts for why
- * (no official Suno API). Add further tools here the same way:
- * declare it in TOOLS, handle it in executeTool().
+ * Tools: web search (Anthropic-hosted), image generation, memory, and
+ * build_app / generate_music, which start background jobs (jobs.ts) because
+ * they outlast a request. Add further tools the same way: declare it in
+ * TOOLS, handle it in executeTool().
  */
 import Anthropic from "@anthropic-ai/sdk";
 import { generateImage } from "./imageGeneration";
-import { buildApp } from "./appBuilder";
-import { generateMusic } from "./musicGeneration";
+import { enqueueJob } from "./jobs";
 import { setMemory } from "../db";
 
 let _client: Anthropic | null = null;
@@ -34,6 +33,8 @@ export type OrchestratorMessage = {
 export type OrchestratorResult = {
   message: string;
   toolsUsed: string[];
+  /** Background jobs started this turn (see jobs.ts) */
+  jobIds: number[];
 };
 
 const MODEL = "claude-sonnet-4-6";
@@ -63,52 +64,39 @@ const TOOLS: Anthropic.ToolUnion[] = [
   {
     name: "build_app",
     description:
-      "Write a set of files into a real, isolated cloud sandbox, install " +
-      "dependencies, start the app, and return a live preview URL. Use this " +
-      "whenever the user asks to build, create, or scaffold a working app, " +
-      "website, or tool — not just to see the code, but to have it actually " +
-      "running. Generate complete, runnable file contents yourself (e.g. a " +
-      "package.json, an index.html or server entrypoint, etc.) before calling " +
-      "this tool.",
+      "Start building a working app, website, or tool in a real cloud sandbox " +
+      "with a live preview. Use this whenever the user asks to build, create, " +
+      "or scaffold an app — not just to see code. The build runs in the " +
+      "background (typically 2–5 minutes) and its progress, live preview, and " +
+      "downloadable source appear under your reply automatically, so just tell " +
+      "the user it has started. Do not write the code yourself; describe what " +
+      "to build.",
     input_schema: {
       type: "object",
       properties: {
-        files: {
-          type: "array",
-          description: "All files the app needs, including package.json.",
-          items: {
-            type: "object",
-            properties: {
-              path: { type: "string", description: "File path, e.g. 'package.json' or 'src/index.js'." },
-              content: { type: "string", description: "Full file contents." },
-            },
-            required: ["path", "content"],
-          },
-        },
-        installCommand: {
-          type: "string",
-          description: "Command to install dependencies. Defaults to 'npm install'.",
-        },
-        startCommand: {
+        description: {
           type: "string",
           description:
-            "Command to start the app so it's reachable on the given port, e.g. " +
-            "'npm run dev -- --host 0.0.0.0 --port 3000' or 'node server.js'.",
+            "Detailed description of the app: purpose, audience, main screens, " +
+            "and features, including anything relevant from the conversation.",
         },
-        port: {
-          type: "number",
-          description: "Port the app listens on, matching startCommand.",
+        appType: {
+          type: "string",
+          enum: ["website", "mobile", "saas"],
+          description: "website (default), mobile (mobile-first web app), or saas.",
         },
       },
-      required: ["files", "startCommand", "port"],
+      required: ["description"],
     },
   },
   {
     name: "generate_music",
     description:
-      "Generate a real song with audio (not just lyrics) and return its URL. " +
-      "Use this whenever the user asks to make, create, or generate a song, " +
-      "track, or piece of music with actual playable audio.",
+      "Start generating a real song with audio (not just lyrics). Use this " +
+      "whenever the user asks to make, create, or generate a song, track, or " +
+      "piece of music with actual playable audio. Generation runs in the " +
+      "background and a player appears under your reply when it's ready, so " +
+      "just tell the user it has started.",
     input_schema: {
       type: "object",
       properties: {
@@ -156,11 +144,18 @@ const TOOLS: Anthropic.ToolUnion[] = [
   },
 ];
 
+export type OrchestratorContext = {
+  projectId?: number;
+  userId?: number;
+};
+
 async function executeTool(
   name: string,
   input: Record<string, any>,
-  projectId: number | undefined
+  context: OrchestratorContext,
+  jobIds: number[]
 ): Promise<string> {
+  const { projectId, userId } = context;
   switch (name) {
     case "generate_image": {
       const { url } = await generateImage({ prompt: input.prompt });
@@ -168,38 +163,35 @@ async function executeTool(
         ? JSON.stringify({ imageUrl: url })
         : JSON.stringify({ error: "Image generation failed to return a URL." });
     }
+    // App builds and music take minutes — longer than the 60s a request
+    // through Firebase Hosting may run — so these queue background jobs
+    // (jobs.ts) and return at once; the chat UI polls them.
     case "build_app": {
-      try {
-        const result = await buildApp({
-          files: input.files,
-          installCommand: input.installCommand,
-          startCommand: input.startCommand,
-          port: input.port,
-        });
-        return JSON.stringify({
-          previewUrl: result.previewUrl,
-          sandboxId: result.sandboxId,
-        });
-      } catch (error) {
-        return JSON.stringify({
-          error: error instanceof Error ? error.message : "App build failed for an unknown reason.",
-        });
+      if (!projectId || !userId) {
+        return JSON.stringify({ error: "App building isn't available in this context." });
       }
+      const description = String(input.description ?? "").trim();
+      if (description.length < 10) {
+        return JSON.stringify({ error: "Describe the app in more detail before building." });
+      }
+      const appType = ["website", "mobile", "saas"].includes(input.appType) ? input.appType : "website";
+      const job = await enqueueJob("app_build", userId, { projectId, appType, description });
+      jobIds.push(job.id);
+      return JSON.stringify({ status: "started", jobId: job.id });
     }
     case "generate_music": {
-      try {
-        const result = await generateMusic({
-          prompt: input.prompt,
-          lyrics: input.lyrics,
-          instrumental: input.instrumental,
-          durationSeconds: input.durationSeconds,
-        });
-        return JSON.stringify({ audioUrl: result.audioUrl });
-      } catch (error) {
-        return JSON.stringify({
-          error: error instanceof Error ? error.message : "Music generation failed for an unknown reason.",
-        });
+      if (!userId) {
+        return JSON.stringify({ error: "Music generation isn't available in this context." });
       }
+      const job = await enqueueJob("music_generate", userId, {
+        projectId,
+        prompt: input.prompt,
+        lyrics: input.lyrics,
+        instrumental: input.instrumental,
+        durationSeconds: input.durationSeconds,
+      });
+      jobIds.push(job.id);
+      return JSON.stringify({ status: "started", jobId: job.id });
     }
     case "remember_fact": {
       if (!projectId) {
@@ -221,10 +213,11 @@ async function executeTool(
 export async function runOrchestrator(
   systemPrompt: string,
   history: OrchestratorMessage[],
-  projectId?: number
+  context: OrchestratorContext = {}
 ): Promise<OrchestratorResult> {
   const client = getClient();
   const toolsUsed: string[] = [];
+  const jobIds: number[] = [];
 
   const messages: Anthropic.MessageParam[] = history.map((m) => ({
     role: m.role,
@@ -254,6 +247,7 @@ export async function runOrchestrator(
       return {
         message: textBlock && textBlock.type === "text" ? textBlock.text : "",
         toolsUsed,
+        jobIds,
       };
     }
 
@@ -264,7 +258,7 @@ export async function runOrchestrator(
     for (const block of response.content) {
       if (block.type === "tool_use") {
         toolsUsed.push(block.name);
-        const result = await executeTool(block.name, block.input as Record<string, any>, projectId);
+        const result = await executeTool(block.name, block.input as Record<string, any>, context, jobIds);
         toolResults.push({
           type: "tool_result",
           tool_use_id: block.id,
@@ -280,5 +274,6 @@ export async function runOrchestrator(
     message:
       "I wasn't able to finish that after several tool calls — could you rephrase or simplify the request?",
     toolsUsed,
+    jobIds,
   };
 }

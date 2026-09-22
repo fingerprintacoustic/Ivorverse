@@ -8,7 +8,9 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { trpc } from "@/lib/trpc";
 import { Plus, Music, Loader2 } from "lucide-react";
-import { useState } from "react";
+import { Progress } from "@/components/ui/progress";
+import { useJob } from "@/hooks/useJob";
+import { useEffect, useState } from "react";
 
 export default function MusicFeature() {
   const [projectName, setProjectName] = useState("");
@@ -38,11 +40,21 @@ export default function MusicFeature() {
 
   const generateStructureMutation = trpc.music.generateStructure.useMutation();
   const generateProductionMutation = trpc.music.generateProductionPrompt.useMutation();
+  // Generation runs as a background job; the mutation only queues it
+  const [audioJobId, setAudioJobId] = useState<number | null>(null);
+  const audioJob = useJob(audioJobId);
   const generateAudioMutation = trpc.music.generateAudio.useMutation({
     onSuccess: (data) => {
-      setGeneratedAudioUrl(data.audioUrl);
+      setGeneratedAudioUrl(null);
+      setAudioJobId(data.jobId);
     },
   });
+  const isGeneratingAudio = generateAudioMutation.isPending || audioJob.isActive;
+
+  useEffect(() => {
+    const url = audioJob.job?.result?.audioUrl;
+    if (audioJob.isCompleted && typeof url === "string") setGeneratedAudioUrl(url);
+  }, [audioJob.isCompleted, audioJob.job?.result?.audioUrl]);
 
   const musicProjects = projects?.filter((p) => p.type === "music") || [];
 
@@ -173,10 +185,10 @@ export default function MusicFeature() {
                   </label>
                   <Button
                     onClick={handleGenerateAudio}
-                    disabled={!audioPrompt.trim() || generateAudioMutation.isPending}
+                    disabled={!audioPrompt.trim() || isGeneratingAudio}
                     className="w-full"
                   >
-                    {generateAudioMutation.isPending ? (
+                    {isGeneratingAudio ? (
                       <>
                         <Loader2 className="w-4 h-4 mr-2 animate-spin" />
                         Generating (this can take a minute)...
@@ -188,6 +200,18 @@ export default function MusicFeature() {
                       </>
                     )}
                   </Button>
+
+                  {audioJob.isActive && (
+                    <div className="space-y-2">
+                      <Progress value={audioJob.job?.progress ?? 0} />
+                      <p className="text-sm text-muted-foreground">{audioJob.job?.stage ?? "Queued"}…</p>
+                    </div>
+                  )}
+                  {(audioJob.isFailed || generateAudioMutation.error) && (
+                    <p className="text-sm text-destructive">
+                      Song generation failed: {audioJob.error ?? generateAudioMutation.error?.message}
+                    </p>
+                  )}
 
                   {generatedAudioUrl && (
                     <div className="mt-6 space-y-3">

@@ -347,15 +347,27 @@ You have a web_search tool available — use it whenever the user asks about cur
         const result = await runOrchestrator(
           systemPrompt + memoryContext + "\n\nIMPORTANT: Maintain context from the conversation history. Understand pronouns and references to previous messages.",
           conversationHistory,
-          input.projectId
+          { projectId: input.projectId, userId: ctx.user.id }
         );
 
         const assistantMessage = result.message;
 
-        // Save assistant message
-        await db.addChatMessage(input.projectId, ctx.user.id, "assistant", assistantMessage);
+        // Save assistant message, with any background jobs (app builds,
+        // songs) it started so the chat can show their progress and results
+        await db.addChatMessage(
+          input.projectId,
+          ctx.user.id,
+          "assistant",
+          assistantMessage,
+          undefined,
+          result.jobIds
+        );
 
-        return { message: assistantMessage, usedWebSearch: result.toolsUsed.includes("web_search") };
+        return {
+          message: assistantMessage,
+          usedWebSearch: result.toolsUsed.includes("web_search"),
+          jobIds: result.jobIds,
+        };
       }),
 
     getMessages: protectedProcedure
@@ -523,38 +535,21 @@ You have a web_search tool available — use it whenever the user asks about cur
         return { productionPrompt };
       }),
 
+    // Song generation can outlast a request, so it runs as a background
+    // job; the client polls jobs.get with the returned jobId.
     generateAudio: protectedProcedure
       .input(
         z.object({
           projectId: z.number(),
-          prompt: z.string(),
+          prompt: z.string().trim().min(1),
           lyrics: z.string().optional(),
           instrumental: z.boolean().optional(),
-          durationSeconds: z.number().optional(),
+          durationSeconds: z.number().min(5).max(240).optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
-        const { generateMusic } = await import("./_core/musicGeneration");
-        const { audioUrl, seed } = await generateMusic({
-          prompt: input.prompt,
-          lyrics: input.lyrics,
-          instrumental: input.instrumental,
-          durationSeconds: input.durationSeconds,
-        });
-
-        await db.createFile(
-          ctx.user.id,
-          `song-${Date.now()}.wav`,
-          `music/${ctx.user.id}/${Date.now()}`,
-          audioUrl,
-          "audio/wav",
-          undefined,
-          input.projectId
-        );
-
-        await db.trackUsage(ctx.user.id, "music_audio");
-
-        return { audioUrl, seed };
+        const job = await enqueueJob("music_generate", ctx.user.id, input);
+        return { jobId: job.id };
       }),
   }),
 

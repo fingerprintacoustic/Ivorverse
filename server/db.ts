@@ -62,6 +62,8 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   fileUrls: string[] | null;
+  /** Background jobs this (assistant) message started — see jobs.ts */
+  jobIds?: number[] | null;
   createdAt: Date;
 }
 
@@ -526,7 +528,8 @@ export async function addChatMessage(
   userId: number,
   role: "user" | "assistant",
   content: string,
-  fileUrls?: string[]
+  fileUrls?: string[],
+  jobIds?: number[]
 ) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
@@ -534,7 +537,7 @@ export async function addChatMessage(
   return await createDoc<ChatMessage>(
     db,
     "chatMessages",
-    { projectId, userId, role, content, fileUrls: fileUrls ?? null },
+    { projectId, userId, role, content, fileUrls: fileUrls ?? null, jobIds: jobIds?.length ? jobIds : null },
     { createdAt: true }
   );
 }

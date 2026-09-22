@@ -16,6 +16,9 @@
  * doesn't need to change either way.
  */
 import { fal } from "@fal-ai/client";
+import * as db from "../db";
+import { storagePut } from "../storage";
+import type { JobContext } from "./jobs";
 
 export type GenerateMusicOptions = {
   prompt: string; // style/genre/mood description
@@ -69,4 +72,41 @@ export async function generateMusic(
   }
 
   return { audioUrl: data.audio.url, seed: data.seed };
+}
+
+/**
+ * Background-job entry point (see jobs.ts), used by the Music page and the
+ * chat assistant's generate_music tool. Generation can run past the 60s a
+ * request through Firebase Hosting is allowed.
+ *
+ * The audio is copied from fal.ai's CDN into our own storage so the saved
+ * file stays available and under our control.
+ */
+export async function runMusicGenerateJob(
+  input: GenerateMusicOptions & { projectId?: number },
+  ctx: JobContext
+) {
+  if (!input.prompt?.trim()) throw new Error("A style/genre prompt is required");
+
+  await ctx.report(10, "Composing and rendering the song");
+  const { audioUrl: falUrl, seed } = await generateMusic({
+    prompt: input.prompt,
+    lyrics: input.lyrics,
+    instrumental: input.instrumental,
+    durationSeconds: input.durationSeconds,
+  });
+
+  await ctx.report(85, "Saving audio");
+  const resp = await fetch(falUrl);
+  if (!resp.ok) throw new Error(`Failed to download generated audio (${resp.status})`);
+  const contentType = resp.headers.get("content-type")?.split(";")[0] || "audio/wav";
+  const extension = contentType.includes("mpeg") ? "mp3" : "wav";
+  const filename = `song-${Date.now()}.${extension}`;
+  const buffer = Buffer.from(await resp.arrayBuffer());
+  const { url, key } = await storagePut(`${ctx.userId}/music/${filename}`, buffer, contentType);
+
+  await db.createFile(ctx.userId, filename, key, url, contentType, buffer.length, input.projectId);
+  await db.trackUsage(ctx.userId, "music_audio");
+
+  return { audioUrl: url, seed };
 }

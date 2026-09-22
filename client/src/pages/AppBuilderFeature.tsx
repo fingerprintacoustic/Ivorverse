@@ -9,7 +9,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useJob } from "@/hooks/useJob";
 import { trpc } from "@/lib/trpc";
-import { strToU8, zipSync } from "fflate";
+import { downloadZip } from "@/lib/downloadZip";
 import { AlertTriangle, Code, Copy, Download, ExternalLink, FileCode, Loader2, Plus } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Streamdown } from "streamdown";
@@ -25,16 +25,6 @@ type BuildResult = {
   previewExpiresAt?: string | null;
   buildError?: string | null;
 };
-
-function downloadZip(files: AppFile[], name: string) {
-  const zipped = zipSync(Object.fromEntries(files.map((f) => [f.path.replace(/^\/+/, ""), strToU8(f.content)])));
-  const url = URL.createObjectURL(new Blob([zipped], { type: "application/zip" }));
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `${name.replace(/[^\w.-]+/g, "-") || "app"}.zip`;
-  a.click();
-  URL.revokeObjectURL(url);
-}
 
 function copyText(text: string) {
   navigator.clipboard

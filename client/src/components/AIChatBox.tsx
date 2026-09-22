@@ -3,7 +3,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { Loader2, Send, User, Sparkles } from "lucide-react";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, type ReactNode } from "react";
 import { Streamdown } from "streamdown";
 
 /**
@@ -12,6 +12,8 @@ import { Streamdown } from "streamdown";
 export type Message = {
   role: "system" | "user" | "assistant";
   content: string;
+  /** Extra UI rendered under the message text (e.g. background job cards) */
+  attachments?: ReactNode;
 };
 
 export type AIChatBoxProps = {
@@ -269,6 +271,7 @@ export function AIChatBox({
                           {message.content}
                         </p>
                       )}
+                      {message.attachments}
                     </div>
 
                     {message.role === "user" && (
