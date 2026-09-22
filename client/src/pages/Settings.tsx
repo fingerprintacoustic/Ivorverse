@@ -5,22 +5,28 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { trpc } from "@/lib/trpc";
 
 export default function Settings() {
   const { user } = useAuth();
+  const utils = trpc.useUtils();
   const [displayName, setDisplayName] = useState(user?.name || "");
-  const [isSaving, setIsSaving] = useState(false);
+  const updateProfile = trpc.auth.updateProfile.useMutation();
+  const isSaving = updateProfile.isPending;
+
+  // user loads asynchronously; sync the field once it arrives
+  useEffect(() => {
+    setDisplayName(user?.name || "");
+  }, [user?.name]);
 
   const handleSaveProfile = async () => {
-    setIsSaving(true);
     try {
-      // TODO: Implement profile update API
+      await updateProfile.mutateAsync({ name: displayName });
+      await utils.auth.me.invalidate();
       toast.success("Profile updated successfully");
     } catch (error) {
       toast.error("Failed to update profile");
-    } finally {
-      setIsSaving(false);
     }
   };
 
@@ -100,7 +106,7 @@ export default function Settings() {
 
           <Button
             onClick={handleSaveProfile}
-            disabled={isSaving || displayName === user?.name}
+            disabled={isSaving || !displayName.trim() || displayName === user?.name}
           >
             {isSaving ? "Saving..." : "Save Changes"}
           </Button>

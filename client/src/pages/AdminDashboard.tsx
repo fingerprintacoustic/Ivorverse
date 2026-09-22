@@ -17,6 +17,9 @@ export default function AdminDashboard() {
   const { data: users } = trpc.admin.listUsers.useQuery(undefined, {
     enabled: user?.role === "admin",
   });
+  const { data: stats, isLoading: statsLoading } = trpc.admin.getUsageStats.useQuery(undefined, {
+    enabled: user?.role === "admin",
+  });
   
   // Redirect non-admins using useEffect (not during render)
   useEffect(() => {
@@ -49,16 +52,15 @@ export default function AdminDashboard() {
     );
   }
 
-  // Mock stats for now
-  const stats = {
-    totalUsers: users?.length || 0,
-    newUsersThisMonth: 0,
-    monthlyRevenue: 0,
-    activeSubscriptions: 0,
-    churnRate: 0,
-    canceledThisMonth: 0,
-    totalApiCalls: 0,
-  };
+  if (statsLoading || !stats) {
+    return (
+      <DashboardLayout>
+        <div className="flex items-center justify-center h-96">
+          <Spinner />
+        </div>
+      </DashboardLayout>
+    );
+  }
 
   return (
     <DashboardLayout>
@@ -95,7 +97,7 @@ export default function AdminDashboard() {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">${stats.monthlyRevenue}</div>
+              <div className="text-2xl font-bold">${stats.monthlyRevenue.toLocaleString()}</div>
               <p className="text-xs text-muted-foreground">
                 {stats.activeSubscriptions} active subscriptions
               </p>
@@ -125,7 +127,7 @@ export default function AdminDashboard() {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">{stats.totalApiCalls}</div>
+              <div className="text-2xl font-bold">{stats.totalApiCalls.toLocaleString()}</div>
               <p className="text-xs text-muted-foreground">
                 This month
               </p>
@@ -203,9 +205,39 @@ export default function AdminDashboard() {
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="text-center py-8 text-muted-foreground">
-                  Subscription management coming soon
-                </div>
+                {stats.subscriptions.length > 0 ? (
+                  <div className="overflow-x-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>User</TableHead>
+                          <TableHead>Tier</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead>Renews / Ends</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {stats.subscriptions.map((s) => (
+                          <TableRow key={s.id}>
+                            <TableCell>{s.userName || s.userEmail || `User #${s.userId}`}</TableCell>
+                            <TableCell className="capitalize">{s.tier}</TableCell>
+                            <TableCell className="capitalize">
+                              {s.status.replace("_", " ")}
+                              {s.cancelAtPeriodEnd ? " (cancels at period end)" : ""}
+                            </TableCell>
+                            <TableCell>
+                              {s.currentPeriodEnd ? new Date(s.currentPeriodEnd).toLocaleDateString() : "N/A"}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                ) : (
+                  <div className="text-center py-8 text-muted-foreground">
+                    No paid subscriptions yet
+                  </div>
+                )}
               </CardContent>
             </Card>
           </TabsContent>
@@ -219,9 +251,29 @@ export default function AdminDashboard() {
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="text-center py-8 text-muted-foreground">
-                  Analytics dashboard coming soon
-                </div>
+                {stats.usageByFeature.length > 0 ? (
+                  <div className="space-y-3">
+                    <p className="text-sm text-muted-foreground">Usage by feature this month</p>
+                    {stats.usageByFeature.map(({ feature, count }) => (
+                      <div key={feature} className="space-y-1">
+                        <div className="flex justify-between text-sm">
+                          <span className="capitalize">{feature.replace(/_/g, " ")}</span>
+                          <span className="font-medium tabular-nums">{count.toLocaleString()}</span>
+                        </div>
+                        <div className="h-2 rounded bg-secondary overflow-hidden">
+                          <div
+                            className="h-full bg-primary"
+                            style={{ width: `${(count / stats.usageByFeature[0].count) * 100}%` }}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-center py-8 text-muted-foreground">
+                    No usage recorded this month
+                  </div>
+                )}
               </CardContent>
             </Card>
           </TabsContent>

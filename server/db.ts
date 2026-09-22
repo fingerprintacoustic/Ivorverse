@@ -4,7 +4,7 @@
  * This replaces the original Drizzle/Postgres implementation (preserved at
  * server/db.drizzle.ts.bak for reference) with Firestore, while keeping the
  * exact same exported function names and signatures. routers.ts,
- * authProcedures.ts, seedTestUsers.ts, and stripe.ts all consume this module
+ * seedTestUsers.ts and stripe.ts consume this module
  * through `import * as db from "./db"` and require no changes.
  *
  * Numeric IDs: the original schema used auto-incrementing integer primary
@@ -19,7 +19,7 @@ import { getFirestore, Firestore, Timestamp, FieldValue } from "firebase-admin/f
 // ---------------------------------------------------------------------------
 // Entity types — mirrors the shapes the original Drizzle schema produced via
 // typeof table.$inferSelect, so return types stay strongly typed for
-// routers.ts, authProcedures.ts, and the client's tRPC-inferred types instead
+// routers.ts and the client's tRPC-inferred types instead
 // of collapsing to `{}`/`unknown`.
 // ---------------------------------------------------------------------------
 
@@ -860,6 +860,82 @@ export async function getAllUsers() {
   const db = await getDb();
   if (!db) return [];
   return await queryMany<User>(db, "users", [], "createdAt");
+}
+
+/**
+ * Real aggregate stats for the admin dashboard (it previously rendered hardcoded
+ * zeros). Scans users/subscriptions in full — fine at current scale; move to
+ * counter docs or Firestore count() aggregations if these collections grow large.
+ */
+export async function getPlatformStats() {
+  const empty = {
+    totalUsers: 0,
+    newUsersThisMonth: 0,
+    monthlyRevenue: 0,
+    activeSubscriptions: 0,
+    canceledThisMonth: 0,
+    churnRate: 0,
+    totalApiCalls: 0,
+    usageByFeature: [] as Array<{ feature: string; count: number }>,
+    subscriptions: [] as Array<Subscription & { userEmail: string | null; userName: string | null }>,
+  };
+  const db = await getDb();
+  if (!db) return empty;
+
+  const { SUBSCRIPTION_TIERS } = await import("./products");
+  const priceByTier: Record<string, number> = Object.fromEntries(
+    Object.values(SUBSCRIPTION_TIERS).map((t) => [t.id, t.price])
+  );
+
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+  const [users, subscriptions, usage] = await Promise.all([
+    queryMany<User>(db, "users", []),
+    queryMany<Subscription>(db, "subscriptions", []),
+    queryMany<Usage>(db, "usage", [
+      ["month", now.getMonth() + 1],
+      ["year", now.getFullYear()],
+    ]),
+  ]);
+
+  const paidActive = subscriptions.filter((s) => s.status === "active" && s.tier !== "free");
+  const canceledThisMonth = subscriptions.filter(
+    (s) => s.tier !== "free" && s.canceledAt && new Date(s.canceledAt) >= monthStart
+  ).length;
+  const churnBase = paidActive.length + canceledThisMonth;
+
+  const featureTotals = new Map<string, number>();
+  for (const u of usage) featureTotals.set(u.feature, (featureTotals.get(u.feature) ?? 0) + u.count);
+
+  const usersById = new Map(users.map((u) => [u.id, u]));
+
+  return {
+    totalUsers: users.length,
+    newUsersThisMonth: users.filter((u) => u.createdAt && new Date(u.createdAt) >= monthStart).length,
+    monthlyRevenue: paidActive.reduce((sum, s) => sum + (priceByTier[s.tier] ?? 0), 0),
+    activeSubscriptions: paidActive.length,
+    canceledThisMonth,
+    churnRate: churnBase === 0 ? 0 : Math.round((canceledThisMonth / churnBase) * 1000) / 10,
+    totalApiCalls: usage.reduce((sum, u) => sum + u.count, 0),
+    usageByFeature: Array.from(featureTotals, ([feature, count]) => ({ feature, count })).sort(
+      (a, b) => b.count - a.count
+    ),
+    subscriptions: subscriptions
+      .filter((s) => s.tier !== "free")
+      .map((s) => ({
+        ...s,
+        userEmail: usersById.get(s.userId)?.email ?? null,
+        userName: usersById.get(s.userId)?.name ?? null,
+      })),
+  };
+}
+
+export async function updateUserProfile(userId: number, updates: { name?: string }) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await updateDoc(db, "users", userId, updates);
+  return await getById<User>(db, "users", userId);
 }
 
 export async function disableUser(userId: number) {

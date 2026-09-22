@@ -19,6 +19,11 @@ export const appRouter = router({
   stripe: stripeRouter,
   auth: router({
     me: publicProcedure.query((opts) => opts.ctx.user),
+    updateProfile: protectedProcedure
+      .input(z.object({ name: z.string().trim().min(1).max(100) }))
+      .mutation(async ({ ctx, input }) => {
+        return await db.updateUserProfile(ctx.user.id, { name: input.name });
+      }),
     logout: publicProcedure.mutation(({ ctx }) => {
       const cookieOptions = getSessionCookieOptions(ctx.req);
       ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
@@ -846,8 +851,7 @@ You have a web_search tool available — use it whenever the user asks about cur
       }),
 
     getUsageStats: adminProcedure.query(async () => {
-      // This would aggregate usage data
-      return { totalUsers: 0, totalUsage: 0 };
+      return await db.getPlatformStats();
     }),
   }),
 
