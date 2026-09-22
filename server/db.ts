@@ -1150,14 +1150,19 @@ export async function getTasks(userId: number) {
   return await queryMany<AgentTask>(db, "agentTasks", [["userId", userId]], "createdAt");
 }
 
+/** Returns false if the task doesn't exist or belongs to another user. */
 export async function updateTaskStatus(
   taskId: number,
+  userId: number,
   status: AgentTask["status"],
   progress: number = 0
-) {
+): Promise<boolean> {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  return await updateDoc(db, "agentTasks", taskId, { status, progress });
+  const task = await getById<AgentTask>(db, "agentTasks", taskId);
+  if (!task || task.userId !== userId) return false;
+  await updateDoc(db, "agentTasks", taskId, { status, progress });
+  return true;
 }
 
 // ---------------------------------------------------------------------------

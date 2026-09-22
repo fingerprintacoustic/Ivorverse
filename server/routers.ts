@@ -19,6 +19,18 @@ import { checkRateLimit, getRateLimitKey, AUTH_RATE_LIMITS } from "./_core/rateL
 
 
 
+/**
+ * Throw NOT_FOUND unless the project exists and belongs to the caller. Every
+ * procedure that takes a projectId must call this (or a user-scoped lookup)
+ * before reading or writing project data: several didn't, so any logged-in
+ * user could e.g. read another user's chat history via chat.getMessages.
+ */
+async function requireOwnedProject(projectId: number, userId: number) {
+  const project = await db.getProjectById(projectId, userId);
+  if (!project) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found" });
+  return project;
+}
+
 export const appRouter = router({
   system: systemRouter,
   stripe: stripeRouter,
@@ -311,6 +323,7 @@ export const appRouter = router({
         })
       )
       .mutation(async ({ ctx, input }) => {
+        await requireOwnedProject(input.projectId, ctx.user.id);
         // Save user message
         await db.addChatMessage(input.projectId, ctx.user.id, "user", input.message, input.fileUrls);
 
@@ -373,6 +386,7 @@ You have a web_search tool available — use it whenever the user asks about cur
     getMessages: protectedProcedure
       .input(z.object({ projectId: z.number() }))
       .query(async ({ ctx, input }) => {
+        await requireOwnedProject(input.projectId, ctx.user.id);
         return await db.getChatMessages(input.projectId);
       }),
 
@@ -386,6 +400,7 @@ You have a web_search tool available — use it whenever the user asks about cur
         })
       )
       .mutation(async ({ ctx, input }) => {
+        if (input.projectId !== undefined) await requireOwnedProject(input.projectId, ctx.user.id);
         const buffer = Buffer.from(input.fileData, "base64");
         const { key, url } = await storagePut(
           `${ctx.user.id}/files/${input.filename}`,
@@ -414,6 +429,7 @@ You have a web_search tool available — use it whenever the user asks about cur
         })
       )
       .mutation(async ({ ctx, input }) => {
+        await requireOwnedProject(input.projectId, ctx.user.id);
         const response = await invokeLLM({
           messages: [
             {
@@ -456,6 +472,7 @@ You have a web_search tool available — use it whenever the user asks about cur
         })
       )
       .mutation(async ({ ctx, input }) => {
+        await requireOwnedProject(input.projectId, ctx.user.id);
         const { runOrchestrator } = await import("./_core/orchestrator");
         const result = await runOrchestrator(
           "You are a research expert. Use the web_search tool to ground your report in " +
@@ -484,6 +501,7 @@ You have a web_search tool available — use it whenever the user asks about cur
     generateLyrics: protectedProcedure
       .input(z.object({ projectId: z.number(), prompt: z.string() }))
       .mutation(async ({ ctx, input }) => {
+        await requireOwnedProject(input.projectId, ctx.user.id);
         const response = await invokeLLM({
           messages: [
             { role: "system", content: "You are a talented songwriter. Generate song lyrics." },
@@ -500,6 +518,7 @@ You have a web_search tool available — use it whenever the user asks about cur
     generateStructure: protectedProcedure
       .input(z.object({ projectId: z.number(), prompt: z.string() }))
       .mutation(async ({ ctx, input }) => {
+        await requireOwnedProject(input.projectId, ctx.user.id);
         const response = await invokeLLM({
           messages: [
             {
@@ -519,6 +538,7 @@ You have a web_search tool available — use it whenever the user asks about cur
     generateProductionPrompt: protectedProcedure
       .input(z.object({ projectId: z.number(), description: z.string() }))
       .mutation(async ({ ctx, input }) => {
+        await requireOwnedProject(input.projectId, ctx.user.id);
         const response = await invokeLLM({
           messages: [
             {
@@ -548,6 +568,7 @@ You have a web_search tool available — use it whenever the user asks about cur
         })
       )
       .mutation(async ({ ctx, input }) => {
+        await requireOwnedProject(input.projectId, ctx.user.id);
         const job = await enqueueJob("music_generate", ctx.user.id, input);
         return { jobId: job.id };
       }),
@@ -667,6 +688,7 @@ You have a web_search tool available — use it whenever the user asks about cur
     generate: protectedProcedure
       .input(z.object({ projectId: z.number(), prompt: z.string() }))
       .mutation(async ({ ctx, input }) => {
+        await requireOwnedProject(input.projectId, ctx.user.id);
         const { url: imageUrl } = await generateImage({ prompt: input.prompt });
 
         await db.createFile(
@@ -687,6 +709,7 @@ You have a web_search tool available — use it whenever the user asks about cur
     generateLogo: protectedProcedure
       .input(z.object({ projectId: z.number(), companyName: z.string() }))
       .mutation(async ({ ctx, input }) => {
+        await requireOwnedProject(input.projectId, ctx.user.id);
         const { url } = await generateImage({
           prompt: `Professional logo for ${input.companyName}`,
         });
@@ -698,6 +721,7 @@ You have a web_search tool available — use it whenever the user asks about cur
     generateThumbnail: protectedProcedure
       .input(z.object({ projectId: z.number(), title: z.string() }))
       .mutation(async ({ ctx, input }) => {
+        await requireOwnedProject(input.projectId, ctx.user.id);
         const { url } = await generateImage({
           prompt: `YouTube thumbnail for: ${input.title}`,
         });
@@ -709,6 +733,7 @@ You have a web_search tool available — use it whenever the user asks about cur
     generateGraphic: protectedProcedure
       .input(z.object({ projectId: z.number(), description: z.string() }))
       .mutation(async ({ ctx, input }) => {
+        await requireOwnedProject(input.projectId, ctx.user.id);
         const { url } = await generateImage({
           prompt: `Social media graphic: ${input.description}`,
         });
@@ -770,6 +795,7 @@ You have a web_search tool available — use it whenever the user asks about cur
         })
       )
       .mutation(async ({ ctx, input }) => {
+        if (input.projectId !== undefined) await requireOwnedProject(input.projectId, ctx.user.id);
         const { url } = await generateSpeech({
           text: input.text,
           userId: ctx.user.id,
@@ -988,6 +1014,12 @@ You have a web_search tool available — use it whenever the user asks about cur
         })
       )
       .mutation(async ({ input, ctx }) => {
+        if (input.agentId !== undefined) {
+          const agents = await db.getAgents(ctx.user.id);
+          if (!agents.some((a) => a.id === input.agentId)) {
+            throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
+          }
+        }
         const result = await db.createTask(
           ctx.user.id,
           input.title,
@@ -1010,8 +1042,10 @@ You have a web_search tool available — use it whenever the user asks about cur
           progress: z.number().optional(),
         })
       )
-      .mutation(async ({ input }) => {
-        return await db.updateTaskStatus(input.taskId, input.status, input.progress ?? 0);
+      .mutation(async ({ input, ctx }) => {
+        const updated = await db.updateTaskStatus(input.taskId, ctx.user.id, input.status, input.progress ?? 0);
+        if (!updated) throw new TRPCError({ code: "NOT_FOUND", message: "Task not found" });
+        return { success: true };
       }),
   }),
 
