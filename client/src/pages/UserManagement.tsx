@@ -8,14 +8,27 @@ import { Spinner } from "@/components/ui/spinner";
 import { toast } from "sonner";
 import { useState } from "react";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import { UserDetailsDialog } from "@/components/UserDetailsDialog";
 
 export default function UserManagement() {
   const { user } = useAuth();
   const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
   const [showDisableDialog, setShowDisableDialog] = useState(false);
+  const [viewUserId, setViewUserId] = useState<number | null>(null);
 
-  // Check if user is admin
-  if (user?.role !== 'admin') {
+  // Hooks must run before the early return below (rules of hooks)
+  const isAdmin = user?.role === "admin";
+  const { data: users, isLoading, refetch } = trpc.admin.listUsers.useQuery(undefined, { enabled: isAdmin });
+  const disableUserMutation = trpc.admin.disableUser.useMutation();
+  const enableUserMutation = trpc.admin.enableUser.useMutation({
+    onSuccess: () => {
+      toast.success("User re-enabled");
+      refetch();
+    },
+    onError: (error) => toast.error(error.message),
+  });
+
+  if (!isAdmin) {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <Card className="w-full max-w-md">
@@ -30,17 +43,15 @@ export default function UserManagement() {
     );
   }
 
-  const { data: users, isLoading } = trpc.admin.listUsers.useQuery();
-  const disableUserMutation = trpc.admin.disableUser.useMutation();
-
   const handleDisableUser = async (userId: number) => {
     try {
       await disableUserMutation.mutateAsync({ userId });
-      toast.success("User disabled successfully");
+      toast.success("User disabled and signed out");
       setShowDisableDialog(false);
       setSelectedUserId(null);
+      refetch();
     } catch (error) {
-      toast.error("Failed to disable user");
+      toast.error(error instanceof Error ? error.message : "Failed to disable user");
     }
   };
 
@@ -91,6 +102,11 @@ export default function UserManagement() {
                         <Badge variant={u.role === 'admin' ? 'default' : 'secondary'}>
                           {u.role === 'admin' ? 'Admin' : 'User'}
                         </Badge>
+                        {u.disabled && (
+                          <Badge variant="destructive" className="ml-1">
+                            Disabled
+                          </Badge>
+                        )}
                       </TableCell>
                       <TableCell>
                         <Badge variant="outline">
@@ -100,19 +116,32 @@ export default function UserManagement() {
                       <TableCell>
                         {new Date(u.createdAt).toLocaleDateString()}
                       </TableCell>
-                      <TableCell className="text-right">
-                        {u.id !== user.id && (
-                          <Button
-                            variant="destructive"
-                            size="sm"
-                            onClick={() => {
-                              setSelectedUserId(u.id);
-                              setShowDisableDialog(true);
-                            }}
-                          >
-                            Disable
-                          </Button>
-                        )}
+                      <TableCell className="text-right space-x-2">
+                        <Button variant="outline" size="sm" onClick={() => setViewUserId(u.id)}>
+                          View
+                        </Button>
+                        {u.id !== user.id &&
+                          (u.disabled ? (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={enableUserMutation.isPending}
+                              onClick={() => enableUserMutation.mutate({ userId: u.id })}
+                            >
+                              Enable
+                            </Button>
+                          ) : (
+                            <Button
+                              variant="destructive"
+                              size="sm"
+                              onClick={() => {
+                                setSelectedUserId(u.id);
+                                setShowDisableDialog(true);
+                              }}
+                            >
+                              Disable
+                            </Button>
+                          ))}
                       </TableCell>
                     </TableRow>
                   ))
@@ -134,7 +163,8 @@ export default function UserManagement() {
           <AlertDialogHeader>
             <AlertDialogTitle>Disable User</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to disable this user? They will not be able to access their account.
+              They'll be signed out everywhere and won't be able to log in until re-enabled. Their
+              subscription isn't changed — cancel or refund it in Stripe if needed.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="flex gap-3 justify-end">
@@ -152,6 +182,8 @@ export default function UserManagement() {
           </div>
         </AlertDialogContent>
       </AlertDialog>
+
+      <UserDetailsDialog userId={viewUserId} onClose={() => setViewUserId(null)} />
     </div>
   );
 }

@@ -106,6 +106,32 @@ export const appRouter = router({
         const user = await db.updateUserProfile(ctx.user.id, { name: input.name });
         return user ? db.toPublicUser(user) : null;
       }),
+    signOutEverywhere: protectedProcedure.mutation(async ({ ctx }) => {
+      await db.revokeUserSessions(ctx.user.id);
+      const cookieOptions = getSessionCookieOptions(ctx.req);
+      ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
+      return { success: true } as const;
+    }),
+
+    deleteAccount: protectedProcedure
+      .input(z.object({ password: z.string().min(1) }))
+      .mutation(async ({ ctx, input }) => {
+        const rateLimit = checkRateLimit(getRateLimitKey("login", `delete:${ctx.user.id}`), AUTH_RATE_LIMITS.login);
+        if (!rateLimit.allowed) {
+          throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "Too many attempts. Try again later." });
+        }
+        const { verifyPassword } = await import("./_core/auth");
+        if (!ctx.user.passwordHash || !verifyPassword(input.password, ctx.user.passwordHash)) {
+          throw new TRPCError({ code: "UNAUTHORIZED", message: "Incorrect password" });
+        }
+        const { deleteAccount } = await import("./_core/accountDeletion");
+        await deleteAccount(ctx.user.id);
+        await db.logAuditAction("delete_account", ctx.user.id);
+        const cookieOptions = getSessionCookieOptions(ctx.req);
+        ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
+        return { success: true } as const;
+      }),
+
     logout: publicProcedure.mutation(({ ctx }) => {
       const cookieOptions = getSessionCookieOptions(ctx.req);
       ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
@@ -212,12 +238,19 @@ export const appRouter = router({
             message: "Please verify your email before logging in",
           });
         }
+        if (user.disabled) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "This account has been disabled." });
+        }
         // Must be a signed session JWT: authenticateRequest (session.ts)
         // rejects anything else, so a raw user id here broke every request
         // after an email/password login.
         const { createSessionToken } = await import("./_core/session");
         const cookieOptions = getSessionCookieOptions(ctx.req);
-        ctx.res.cookie(COOKIE_NAME, await createSessionToken(user.id), cookieOptions);
+        ctx.res.cookie(
+          COOKIE_NAME,
+          await createSessionToken(user.id, { sessionVersion: user.sessionVersion ?? 0 }),
+          cookieOptions
+        );
         return {
           success: true,
           user: {
@@ -322,6 +355,8 @@ export const appRouter = router({
         }
         const newPasswordHash = hashPassword(input.newPassword);
         await db.resetUserPassword(user.id, newPasswordHash);
+        // Anyone holding an old session (e.g. whoever the reset is locking out) is signed out
+        await db.revokeUserSessions(user.id);
         return {
           success: true,
           message: "Password reset successfully. You can now log in with your new password.",
@@ -1086,14 +1121,46 @@ You have a web_search tool available — use it whenever the user asks about cur
       .input(z.object({ userId: z.number() }))
       .query(async ({ input }) => {
         const user = await db.getUserById(input.userId);
-        return user ? db.toPublicUser(user) : null;
+        if (!user) throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
+        const [subscription, usage, projects] = await Promise.all([
+          db.getSubscriptionByUserId(user.id),
+          getQuotaUsage(user),
+          db.getUserProjects(user.id),
+        ]);
+        return {
+          user: db.toPublicUser(user),
+          subscription: subscription
+            ? {
+                tier: subscription.tier,
+                status: subscription.status,
+                currentPeriodEnd: subscription.currentPeriodEnd,
+                cancelAtPeriodEnd: subscription.cancelAtPeriodEnd ?? false,
+              }
+            : null,
+          usage,
+          projectCount: projects.length,
+        };
       }),
 
+    // Blocks login and signs the user out everywhere. Billing is untouched:
+    // cancel or refund in Stripe if that's also wanted.
     disableUser: adminProcedure
       .input(z.object({ userId: z.number() }))
       .mutation(async ({ input, ctx }) => {
+        if (input.userId === ctx.user.id) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "You can't disable your own account" });
+        }
+        await db.setUserDisabled(input.userId, true);
         await db.logAuditAction("disable_user", ctx.user.id, ctx.user.id, input.userId);
-        return await db.disableUser(input.userId);
+        return { success: true };
+      }),
+
+    enableUser: adminProcedure
+      .input(z.object({ userId: z.number() }))
+      .mutation(async ({ input, ctx }) => {
+        await db.setUserDisabled(input.userId, false);
+        await db.logAuditAction("enable_user", ctx.user.id, ctx.user.id, input.userId);
+        return { success: true };
       }),
 
     getUsageStats: adminProcedure.query(async () => {

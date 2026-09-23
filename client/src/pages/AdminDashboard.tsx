@@ -8,11 +8,13 @@ import { Spinner } from "@/components/ui/spinner";
 import { trpc } from "@/lib/trpc";
 import { Users, TrendingUp, DollarSign, BarChart3 } from "lucide-react";
 import { useLocation } from "wouter";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { UserDetailsDialog } from "@/components/UserDetailsDialog";
 
 export default function AdminDashboard() {
   const { user, loading } = useAuth();
   const [, setLocation] = useLocation();
+  const [viewUserId, setViewUserId] = useState<number | null>(null);
   
   const { data: users } = trpc.admin.listUsers.useQuery(undefined, {
     enabled: user?.role === "admin",
@@ -178,7 +180,7 @@ export default function AdminDashboard() {
                               {new Date(u.createdAt).toLocaleDateString()}
                             </TableCell>
                             <TableCell>
-                              <Button size="sm" variant="outline">
+                              <Button size="sm" variant="outline" onClick={() => setViewUserId(u.id)}>
                                 View
                               </Button>
                             </TableCell>
@@ -279,6 +281,7 @@ export default function AdminDashboard() {
           </TabsContent>
         </Tabs>
       </div>
+      <UserDetailsDialog userId={viewUserId} onClose={() => setViewUserId(null)} />
     </DashboardLayout>
   );
 }

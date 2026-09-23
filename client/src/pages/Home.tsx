@@ -116,7 +116,11 @@ export default function Home() {
                 Get Started <ArrowRight className="w-4 h-4 ml-2" />
               </a>
             </Button>
-            <Button size="lg" variant="outline">
+            <Button
+              size="lg"
+              variant="outline"
+              onClick={() => document.getElementById("features")?.scrollIntoView({ behavior: "smooth" })}
+            >
               Learn More
             </Button>
           </div>
@@ -138,7 +142,7 @@ export default function Home() {
       </section>
 
       {/* Features Section */}
-      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20">
+      <section id="features" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20 scroll-mt-8">
         <div className="text-center mb-16">
           <h2 className="text-4xl font-bold text-white mb-4">
             <Zap className="w-8 h-8 inline mr-2 text-cyan-400" />

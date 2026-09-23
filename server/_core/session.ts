@@ -43,33 +43,39 @@ function parseCookies(cookieHeader: string | undefined): Map<string, string> {
   return new Map(Object.entries(parseCookieHeader(cookieHeader)));
 }
 
-/** Issue a signed session token for a user id. */
+/**
+ * Issue a signed session token for a user. `sessionVersion` must be the
+ * user's current sessionVersion: bumping that field revokes every token
+ * issued before (sign out everywhere, password reset, account disabled).
+ */
 export async function createSessionToken(
   userId: number,
-  options: { expiresInMs?: number } = {}
+  options: { expiresInMs?: number; sessionVersion?: number } = {}
 ): Promise<string> {
   const issuedAt = Date.now();
   const expiresInMs = options.expiresInMs ?? 365 * 24 * 60 * 60 * 1000; // 1 year default
   const expirationSeconds = Math.floor((issuedAt + expiresInMs) / 1000);
 
-  return new SignJWT({ userId })
+  return new SignJWT({ userId, sv: options.sessionVersion ?? 0 })
     .setProtectedHeader({ alg: "HS256", typ: "JWT" })
     .setExpirationTime(expirationSeconds)
     .sign(getSessionSecret());
 }
 
-/** Verify a session cookie value and return the user id it encodes, or null. */
+/** Verify a session cookie value; returns the user id and session version, or null. */
 export async function verifySessionToken(
   cookieValue: string | undefined | null
-): Promise<number | null> {
+): Promise<{ userId: number; sessionVersion: number } | null> {
   if (!cookieValue) return null;
 
   try {
     const { payload } = await jwtVerify(cookieValue, getSessionSecret(), {
       algorithms: ["HS256"],
     });
-    const { userId } = payload as Record<string, unknown>;
-    return isPositiveInt(userId) ? userId : null;
+    const { userId, sv } = payload as Record<string, unknown>;
+    if (!isPositiveInt(userId)) return null;
+    // Tokens issued before versioning carry no sv; they count as version 0
+    return { userId, sessionVersion: typeof sv === "number" ? sv : 0 };
   } catch (error) {
     console.warn("[Auth] Session verification failed:", String(error));
     return null;
@@ -80,15 +86,21 @@ export async function verifySessionToken(
 export async function authenticateRequest(req: Request): Promise<User> {
   const cookies = parseCookies(req.headers.cookie);
   const sessionCookie = cookies.get(COOKIE_NAME);
-  const userId = await verifySessionToken(sessionCookie);
+  const session = await verifySessionToken(sessionCookie);
 
-  if (!userId) {
+  if (!session) {
     throw ForbiddenError("Invalid session cookie");
   }
 
-  const user = await db.getUserById(userId);
+  const user = await db.getUserById(session.userId);
   if (!user) {
     throw ForbiddenError("User not found");
+  }
+  if (user.disabled) {
+    throw ForbiddenError("Account disabled");
+  }
+  if (session.sessionVersion !== (user.sessionVersion ?? 0)) {
+    throw ForbiddenError("Session revoked");
   }
 
   return user;

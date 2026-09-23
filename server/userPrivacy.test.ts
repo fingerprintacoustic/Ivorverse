@@ -20,6 +20,11 @@ vi.mock("./db", async (importOriginal) => ({
   getAllUsers: vi.fn(async () => [fullUser(1), fullUser(2)]),
   getUserById: vi.fn(async (id: number) => fullUser(id)),
   updateUserProfile: vi.fn(async (id: number) => fullUser(id)),
+  // getUserDetails also loads plan/usage/project info
+  getDb: vi.fn(async () => null),
+  getSubscriptionByUserId: vi.fn(async () => undefined),
+  getUserProjects: vi.fn(async () => []),
+  getUserCharacters: vi.fn(async () => []),
 }));
 
 const { appRouter } = await import("./routers");

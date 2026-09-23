@@ -8,6 +8,118 @@ import { toast } from "sonner";
 import { useEffect, useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { BillingCard } from "@/components/BillingCard";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Loader2 } from "lucide-react";
+
+/** Both actions end the current session; send the browser home fresh. */
+function leaveApp(path: string) {
+  window.location.href = path;
+}
+
+function SignOutEverywhereButton() {
+  const [open, setOpen] = useState(false);
+  const signOut = trpc.auth.signOutEverywhere.useMutation({
+    onSuccess: () => leaveApp("/login"),
+    onError: (error) => toast.error(error.message),
+  });
+  return (
+    <>
+      <Button variant="outline" onClick={() => setOpen(true)}>
+        Sign Out All Devices
+      </Button>
+      <AlertDialog open={open} onOpenChange={setOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Sign out everywhere?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Every session on every device is ended, including this one. You'll need to log in again.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <Button onClick={() => signOut.mutate()} disabled={signOut.isPending}>
+              {signOut.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+              Sign Out Everywhere
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
+  );
+}
+
+function DeleteAccountButton() {
+  const [open, setOpen] = useState(false);
+  const [password, setPassword] = useState("");
+  const deleteAccount = trpc.auth.deleteAccount.useMutation({
+    onSuccess: () => leaveApp("/"),
+    onError: (error) => toast.error(error.message),
+  });
+  return (
+    <>
+      <Button variant="destructive" onClick={() => setOpen(true)}>
+        Delete Account
+      </Button>
+      <AlertDialog
+        open={open}
+        onOpenChange={(next) => {
+          setOpen(next);
+          if (!next) setPassword("");
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete your account permanently?</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2 text-sm text-muted-foreground">
+                <p>This can't be undone. It will:</p>
+                <ul className="list-disc pl-5 space-y-1">
+                  <li>Cancel any paid subscription immediately</li>
+                  <li>Delete your projects, chats, characters, agents, workflows, and uploaded files</li>
+                  <li>Take your products off sale and delete their sales records</li>
+                </ul>
+                <p>Payouts already in your connected Stripe account stay with Stripe.</p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="delete-password">Enter your password to confirm</Label>
+            <Input
+              id="delete-password"
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={!password || deleteAccount.isPending}
+              onClick={(e) => {
+                e.preventDefault(); // keep the dialog open until the server answers
+                deleteAccount.mutate({ password });
+              }}
+            >
+              {deleteAccount.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+              Delete Everything
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
+  );
+}
 
 export default function Settings() {
   const { user } = useAuth();
@@ -136,9 +248,7 @@ export default function Settings() {
                 Sign out from all devices
               </p>
             </div>
-            <Button variant="outline" disabled>
-              Sign Out All Devices
-            </Button>
+            <SignOutEverywhereButton />
           </div>
         </CardContent>
       </Card>
@@ -161,9 +271,7 @@ export default function Settings() {
                 Permanently delete your account and all associated data
               </p>
             </div>
-            <Button variant="destructive" disabled>
-              Delete Account
-            </Button>
+            <DeleteAccountButton />
           </div>
         </CardContent>
       </Card>

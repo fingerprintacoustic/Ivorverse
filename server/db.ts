@@ -38,6 +38,10 @@ export interface User {
   emailVerificationExpires: Date | null;
   passwordResetToken: string | null;
   passwordResetExpires: Date | null;
+  /** Bumped to revoke all existing sessions (see session.ts) */
+  sessionVersion?: number;
+  /** Set by an admin: blocks login and every existing session */
+  disabled?: boolean;
   /** Stripe Connect (Express) account used to sell products — see marketplace.ts */
   stripeConnectAccountId?: string | null;
   stripeChargesEnabled?: boolean;
@@ -1082,12 +1086,29 @@ export async function setUserSubscriptionTier(userId: number, tier: User["subscr
   await updateDoc(db, "users", userId, { subscriptionTier: tier });
 }
 
-export async function disableUser(userId: number) {
+/** Invalidate every session the user currently has. */
+export async function revokeUserSessions(userId: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  const existing = await queryOne<Subscription>(db, "subscriptions", "userId", userId);
-  if (!existing) return;
-  return await updateDoc(db, "subscriptions", existing.id, { status: "canceled" });
+  await db.collection("users").doc(String(userId)).update({
+    sessionVersion: FieldValue.increment(1),
+    updatedAt: new Date(),
+  });
+}
+
+/**
+ * Disable (or re-enable) an account. Disabling also revokes existing
+ * sessions. This used to only mark the user's subscription record
+ * "canceled" — they could still log in, and Stripe kept billing them.
+ */
+export async function setUserDisabled(userId: number, disabled: boolean) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.collection("users").doc(String(userId)).update({
+    disabled,
+    ...(disabled ? { sessionVersion: FieldValue.increment(1) } : {}),
+    updatedAt: new Date(),
+  });
 }
 
 export async function logAuditAction(

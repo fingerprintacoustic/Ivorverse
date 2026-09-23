@@ -85,3 +85,16 @@ export async function storageGetSignedUrl(relKey: string): Promise<string> {
   });
   return url;
 }
+
+/** Delete stored objects by key. Missing objects are ignored. */
+export async function storageDelete(keys: string[]): Promise<void> {
+  const bucket = getBucket();
+  await Promise.all(
+    keys.map((key) => bucket.file(normalizeKey(key)).delete({ ignoreNotFound: true }))
+  );
+}
+
+/** Delete every stored object under a key prefix (e.g. a user's folder). */
+export async function storageDeletePrefix(prefix: string): Promise<void> {
+  await getBucket().deleteFiles({ prefix: normalizeKey(prefix), force: true });
+}
