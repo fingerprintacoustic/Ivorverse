@@ -181,7 +181,7 @@ async function executeToolUnchecked(
       }
       const period = await consumeQuota(user, "imageGenerations");
       try {
-        const { url } = await generateImage({ prompt: input.prompt });
+        const { url } = await generateImage({ prompt: input.prompt, userId: user.id });
         if (!url) throw new Error("Image generation failed to return a URL.");
         return JSON.stringify({ imageUrl: url });
       } catch (error) {

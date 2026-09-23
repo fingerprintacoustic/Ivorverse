@@ -6,6 +6,9 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Link } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { Plus, Sparkles, Loader2, Download, Copy, Share2 } from "lucide-react";
 import { useState, useMemo } from "react";
@@ -19,6 +22,8 @@ export default function ImageFeature() {
   const [isOpen, setIsOpen] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [companyName, setCompanyName] = useState("");
+  const [characterId, setCharacterId] = useState<string>("none");
+  const { data: characters } = trpc.characters.list.useQuery();
   const [generatedImage, setGeneratedImage] = useState<{ url: string; format: "png" | "jpg" } | null>(null);
   const [generatedImages, setGeneratedImages] = useState<Array<{ id: string; url: string; prompt: string; createdAt: Date }>>([]);
 
@@ -113,6 +118,7 @@ export default function ImageFeature() {
       await generateImageMutation.mutateAsync({
         projectId: imageProjects[0].id,
         prompt,
+        characterId: characterId === "none" ? undefined : Number(characterId),
       });
     } catch (error) {
       console.error("Error generating image:", error);
@@ -258,6 +264,36 @@ export default function ImageFeature() {
                     onChange={(e) => setPrompt(e.target.value)}
                     rows={4}
                   />
+                  <div className="space-y-1.5">
+                    <Label>Character (optional)</Label>
+                    <Select value={characterId} onValueChange={setCharacterId}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">No character</SelectItem>
+                        {(characters ?? []).map((c) => (
+                          <SelectItem key={c.id} value={String(c.id)} disabled={!c.faceImageUrl}>
+                            {c.name}
+                            {!c.faceImageUrl ? " (add a face first)" : ""}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">
+                      {characters && characters.length > 0 ? (
+                        "Uses the character's face so the same person appears in your image."
+                      ) : (
+                        <>
+                          Create characters with a face image in{" "}
+                          <Link href="/feature/character" className="underline">
+                            Characters
+                          </Link>{" "}
+                          to feature them here.
+                        </>
+                      )}
+                    </p>
+                  </div>
                   <Button
                     onClick={handleGenerateImage}
                     disabled={!prompt.trim() || generateImageMutation.isPending}

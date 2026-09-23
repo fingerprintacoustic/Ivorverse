@@ -21,6 +21,8 @@ import { storagePut } from "server/storage";
 
 export type GenerateImageOptions = {
   prompt: string;
+  /** Store under this user's folder (so account deletion removes it) */
+  userId?: number;
   originalImages?: Array<{
     url?: string;
     b64Json?: string;
@@ -30,6 +32,8 @@ export type GenerateImageOptions = {
 
 export type GenerateImageResponse = {
   url?: string;
+  /** Storage key of the saved image */
+  key?: string;
 };
 
 let _client: OpenAI | null = null;
@@ -54,24 +58,29 @@ export async function generateImage(
     // Image editing: fetch the reference image(s) and use the edits endpoint.
     const ref = options.originalImages[0];
     let imageBuffer: Buffer;
+    let mimeType = ref.mimeType;
     if (ref.b64Json) {
       imageBuffer = Buffer.from(ref.b64Json, "base64");
     } else if (ref.url) {
       const resp = await fetch(ref.url);
       if (!resp.ok) throw new Error(`Failed to fetch reference image (${resp.status})`);
       imageBuffer = Buffer.from(await resp.arrayBuffer());
+      // Use the real type: uploads (e.g. character faces) are often JPEG/WebP
+      mimeType ??= resp.headers.get("content-type")?.split(";")[0] || undefined;
     } else {
       throw new Error("originalImages entry must include either url or b64Json");
     }
 
-    const file = await OpenAI.toFile(imageBuffer, "reference.png", {
-      type: ref.mimeType || "image/png",
-    });
+    const type = mimeType || "image/png";
+    const extension = type === "image/jpeg" ? "jpg" : type === "image/webp" ? "webp" : "png";
+    const file = await OpenAI.toFile(imageBuffer, `reference.${extension}`, { type });
 
     const result = await client.images.edit({
       model: "gpt-image-1",
       image: file,
       prompt: options.prompt,
+      // Keep faces and other identifying details from the reference
+      input_fidelity: "high",
     });
     base64Data = result.data?.[0]?.b64_json;
   } else {
@@ -88,7 +97,8 @@ export async function generateImage(
   }
 
   const buffer = Buffer.from(base64Data, "base64");
-  const { url } = await storagePut(`generated/${Date.now()}.png`, buffer, "image/png");
+  const folder = options.userId ? `${options.userId}/images` : "generated";
+  const { url, key } = await storagePut(`${folder}/image.png`, buffer, "image/png");
 
-  return { url };
+  return { url, key };
 }

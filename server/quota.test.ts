@@ -115,7 +115,7 @@ describe("quota-metered procedures", async () => {
   } as unknown as TrpcContext);
 
   it("charges a successful request", async () => {
-    generateImage.mockResolvedValue({ url: "https://img.test/a.png" });
+    generateImage.mockResolvedValue({ url: "https://img.test/a.png", key: "1/images/a.png" });
     await caller.image.generate({ projectId: 1, prompt: "a cat" });
     expect(used(1, "imageGenerations")).toBe(1);
   });

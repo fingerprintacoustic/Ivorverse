@@ -70,6 +70,43 @@ async function requireOwnedProduct(productId: number, userId: number) {
   return product;
 }
 
+/**
+ * Generate an image for a project and record it. With a character, its face
+ * image is the reference, so the same person appears in the result.
+ */
+async function generateProjectImage(
+  userId: number,
+  projectId: number,
+  prompt: string,
+  kind: string,
+  characterId?: number
+) {
+  let fullPrompt = prompt;
+  let originalImages: Array<{ url: string }> | undefined;
+  if (characterId !== undefined) {
+    const character = await db.getCharacterById(characterId, userId);
+    if (!character) throw new TRPCError({ code: "NOT_FOUND", message: "Character not found" });
+    if (!character.faceImageUrl) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `Upload a face image for ${character.name} in Characters first.`,
+      });
+    }
+    originalImages = [{ url: character.faceImageUrl }];
+    fullPrompt =
+      `${prompt}\n\nThe person in the reference image is ${character.name}` +
+      (character.description ? ` (${character.description.slice(0, 1000)})` : "") +
+      ". Feature them in the image and keep their face and identifying features the same.";
+  }
+
+  const { url, key } = await generateImage({ prompt: fullPrompt, userId, originalImages });
+  if (!url || !key) throw new Error("Image generation returned no image");
+
+  await db.createFile(userId, `${kind}-${Date.now()}.png`, key, url, "image/png", undefined, projectId);
+  await db.trackUsage(userId, "image");
+  return { url };
+}
+
 /** Every agent a workflow's steps reference must belong to the caller. */
 async function requireOwnedAgents(definition: WorkflowDefinition, userId: number) {
   const ids = definition.steps.map((s) => s.agentId).filter((id): id is number => typeof id === "number");
@@ -737,7 +774,9 @@ You have a web_search tool available — use it whenever the user asks about cur
         // One image per scene. Generated in parallel: one at a time could run
         // past the 60s a request through Firebase Hosting is allowed.
         const period = await consumeQuota(ctx.user, "imageGenerations", scenes.length);
-        const results = await Promise.allSettled(scenes.map((scene) => generateImage({ prompt: scene })));
+        const results = await Promise.allSettled(
+          scenes.map((scene) => generateImage({ prompt: scene, userId: ctx.user.id }))
+        );
         const imageUrls = results
           .map((r) => (r.status === "fulfilled" ? r.value.url : undefined))
           .filter((url): url is string => Boolean(url));
@@ -794,60 +833,48 @@ You have a web_search tool available — use it whenever the user asks about cur
   // Image Studio
   image: router({
     generate: quotaProcedure("imageGenerations")
-      .input(z.object({ projectId: z.number(), prompt: z.string() }))
+      .input(z.object({ projectId: z.number(), prompt: z.string().trim().min(1).max(4000), characterId: z.number().optional() }))
       .mutation(async ({ ctx, input }) => {
         await requireOwnedProject(input.projectId, ctx.user.id);
-        const { url: imageUrl } = await generateImage({ prompt: input.prompt });
-
-        await db.createFile(
-          ctx.user.id,
-          `image-${Date.now()}.png`,
-          `images/${ctx.user.id}/${Date.now()}`,
-          imageUrl || "",
-          "image/png",
-          undefined,
-          input.projectId
-        );
-
-        await db.trackUsage(ctx.user.id, "image");
-
-        return { url: imageUrl };
+        return await generateProjectImage(ctx.user.id, input.projectId, input.prompt, "image", input.characterId);
       }),
 
     generateLogo: quotaProcedure("imageGenerations")
-      .input(z.object({ projectId: z.number(), companyName: z.string() }))
+      .input(z.object({ projectId: z.number(), companyName: z.string().trim().min(1).max(200) }))
       .mutation(async ({ ctx, input }) => {
         await requireOwnedProject(input.projectId, ctx.user.id);
-        const { url } = await generateImage({
-          prompt: `Professional logo for ${input.companyName}`,
-        });
-
-        await db.trackUsage(ctx.user.id, "image");
-        return { url };
+        return await generateProjectImage(
+          ctx.user.id,
+          input.projectId,
+          `Professional logo for ${input.companyName}`,
+          "logo"
+        );
       }),
 
     generateThumbnail: quotaProcedure("imageGenerations")
-      .input(z.object({ projectId: z.number(), title: z.string() }))
+      .input(z.object({ projectId: z.number(), title: z.string().trim().min(1).max(500), characterId: z.number().optional() }))
       .mutation(async ({ ctx, input }) => {
         await requireOwnedProject(input.projectId, ctx.user.id);
-        const { url } = await generateImage({
-          prompt: `YouTube thumbnail for: ${input.title}`,
-        });
-
-        await db.trackUsage(ctx.user.id, "image");
-        return { url };
+        return await generateProjectImage(
+          ctx.user.id,
+          input.projectId,
+          `YouTube thumbnail for: ${input.title}`,
+          "thumbnail",
+          input.characterId
+        );
       }),
 
     generateGraphic: quotaProcedure("imageGenerations")
-      .input(z.object({ projectId: z.number(), description: z.string() }))
+      .input(z.object({ projectId: z.number(), description: z.string().trim().min(1).max(4000), characterId: z.number().optional() }))
       .mutation(async ({ ctx, input }) => {
         await requireOwnedProject(input.projectId, ctx.user.id);
-        const { url } = await generateImage({
-          prompt: `Social media graphic: ${input.description}`,
-        });
-
-        await db.trackUsage(ctx.user.id, "image");
-        return { url };
+        return await generateProjectImage(
+          ctx.user.id,
+          input.projectId,
+          `Social media graphic: ${input.description}`,
+          "graphic",
+          input.characterId
+        );
       }),
   }),
 
