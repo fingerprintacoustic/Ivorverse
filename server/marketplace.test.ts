@@ -8,8 +8,9 @@ vi.mock("./db", () => ({
   getUserById: vi.fn(async (id: number) => users.get(id)),
   setUserConnectAccount: vi.fn(async (id: number, u: any) => Object.assign(users.get(id), u)),
   recordSaleOnce: vi.fn(async (sale: any) => {
-    if (sales.has(sale.stripeSessionId)) return false;
-    sales.set(sale.stripeSessionId, sale);
+    const key = sale.stripeInvoiceId ?? sale.stripeSessionId;
+    if (sales.has(key)) return false;
+    sales.set(key, sale);
     return true;
   }),
 }));
@@ -23,7 +24,9 @@ vi.mock("./stripe", () => ({ getStripe: () => stripe }));
 const sendEmail = vi.fn(async () => true);
 vi.mock("./_core/emailService", () => ({ sendEmail }));
 
-const { createProductCheckout, getPurchaseDelivery, recordProductSale } = await import("./_core/marketplace");
+const { createProductCheckout, getPurchaseDelivery, recordProductSale, recordProductRenewal } = await import(
+  "./_core/marketplace"
+);
 
 const APP = "https://app.test";
 
@@ -126,6 +129,43 @@ describe("recording sales", () => {
     expect(email.to).toBe("buyer@test.com");
     expect(email.html).toContain("https://files.test/guide.pdf");
     expect(email.html).toContain("Guide &lt;b&gt;"); // product name is escaped
+  });
+
+  const invoice = (overrides: Record<string, any> = {}) =>
+    ({
+      id: "in_renew",
+      billing_reason: "subscription_cycle",
+      amount_paid: 500,
+      customer_email: "buyer@test.com",
+      parent: { subscription_details: { metadata: { product_id: "10", seller_id: "2" } } },
+      ...overrides,
+    }) as any;
+
+  it("records a monthly renewal once per invoice, without re-emailing", async () => {
+    await recordProductRenewal(invoice());
+    await recordProductRenewal(invoice());
+
+    expect(sales.size).toBe(1);
+    expect(sales.get("in_renew")).toMatchObject({
+      productId: 10,
+      sellerId: 2,
+      amount: 5,
+      buyerEmail: "buyer@test.com",
+      mode: "renewal",
+      stripeInvoiceId: "in_renew",
+    });
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it("skips the first invoice, which checkout already recorded", async () => {
+    await recordProductRenewal(invoice({ billing_reason: "subscription_create" }));
+    expect(sales.size).toBe(0);
+  });
+
+  it("ignores invoices that aren't for a product (e.g. IvorVerse plans)", async () => {
+    await recordProductRenewal(invoice({ parent: { subscription_details: { metadata: { tier_id: "pro" } } } }));
+    await recordProductRenewal(invoice({ parent: null }));
+    expect(sales.size).toBe(0);
   });
 
   it("ignores unpaid sessions", async () => {

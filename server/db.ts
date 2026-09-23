@@ -311,8 +311,11 @@ export interface Sale {
   /** USD, as charged */
   amount: number;
   buyerEmail: string | null;
-  mode: "payment" | "subscription";
-  stripeSessionId: string;
+  /** payment: one-time; subscription: first month (via Checkout); renewal: a later month */
+  mode: "payment" | "subscription" | "renewal";
+  /** Checkout session for purchases; invoice id for renewals. Also the doc id. */
+  stripeSessionId?: string;
+  stripeInvoiceId?: string;
   createdAt: Date;
 }
 
@@ -1443,13 +1446,16 @@ export async function setUserConnectAccount(
 }
 
 /**
- * Record a sale once per Checkout session (webhooks can be delivered more
- * than once). The session id is the document id, so creation is atomic.
+ * Record a sale once per Stripe object (webhooks can be delivered more than
+ * once). The Checkout session id, or invoice id for a renewal, is the
+ * document id, so creation is atomic.
  */
 export async function recordSaleOnce(data: Omit<Sale, "id" | "createdAt">): Promise<boolean> {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  const ref = db.collection("sales").doc(data.stripeSessionId);
+  const key = data.stripeInvoiceId ?? data.stripeSessionId;
+  if (!key) throw new Error("A sale needs a Stripe session or invoice id");
+  const ref = db.collection("sales").doc(key);
   try {
     await ref.create({ ...data, createdAt: new Date() });
     return true;

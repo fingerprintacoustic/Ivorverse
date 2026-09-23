@@ -140,6 +140,30 @@ describe("Stripe webhook", () => {
     expect(userTiers.size).toBe(0);
   });
 
+  it("records a product subscription renewal from invoice.paid", async () => {
+    const db = await import("./db");
+    const res = await post({
+      id: "evt_3",
+      object: "event",
+      type: "invoice.paid",
+      data: {
+        object: {
+          id: "in_1",
+          object: "invoice",
+          billing_reason: "subscription_cycle",
+          amount_paid: 500,
+          customer_email: "buyer@test.com",
+          parent: { subscription_details: { metadata: { product_id: "10", seller_id: "2" } } },
+        },
+      },
+    });
+    expect(res.status).toBe(200);
+    expect(db.recordSaleOnce).toHaveBeenCalledWith(
+      expect.objectContaining({ productId: 10, mode: "renewal", stripeInvoiceId: "in_1", amount: 5 })
+    );
+    expect(userTiers.size).toBe(0);
+  });
+
   it("ignores subscriptions that aren't IvorVerse plans", async () => {
     const res = await post(subscriptionEvent("customer.subscription.created", { id: "sub_other", metadata: {} }));
     expect(res.status).toBe(200);

@@ -234,6 +234,12 @@ export async function handleStripeWebhook(event: Stripe.Event) {
       break;
     }
 
+    case "invoice.paid": {
+      const { recordProductRenewal } = await import("./_core/marketplace");
+      await recordProductRenewal(event.data.object as Stripe.Invoice);
+      break;
+    }
+
     case "customer.subscription.created":
     case "customer.subscription.updated":
     case "customer.subscription.deleted":
@@ -241,7 +247,7 @@ export async function handleStripeWebhook(event: Stripe.Event) {
       break;
 
     default:
-      // invoice.* etc.: subscription state arrives via customer.subscription.*
+      // Other invoice events etc.: plan state arrives via customer.subscription.*
       break;
   }
 }

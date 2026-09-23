@@ -174,3 +174,27 @@ export async function recordProductSale(session: Stripe.Checkout.Session) {
     });
   }
 }
+
+/**
+ * From the invoice.paid webhook: record a monthly renewal of a product
+ * subscription. The first month is recorded from checkout.session.completed
+ * (billing_reason "subscription_create"), so only "subscription_cycle"
+ * invoices count here. IvorVerse's own plan invoices carry no product_id
+ * and are ignored.
+ */
+export async function recordProductRenewal(invoice: Stripe.Invoice) {
+  if (invoice.billing_reason !== "subscription_cycle") return;
+  const metadata = invoice.parent?.subscription_details?.metadata;
+  const productId = Number(metadata?.product_id);
+  const sellerId = Number(metadata?.seller_id);
+  if (!productId || !sellerId || !invoice.id) return;
+
+  await db.recordSaleOnce({
+    productId,
+    sellerId,
+    amount: (invoice.amount_paid ?? 0) / 100,
+    buyerEmail: invoice.customer_email ?? null,
+    mode: "renewal",
+    stripeInvoiceId: invoice.id,
+  });
+}

@@ -295,7 +295,7 @@ export default function MonetizeFeature() {
                     <span className="text-muted-foreground">{sale.buyerEmail ?? "Unknown buyer"}</span>
                     <span className="tabular-nums">
                       {money(sale.amount)}
-                      {sale.mode === "subscription" ? " (first month)" : ""}
+                      {sale.mode === "subscription" ? " (first month)" : sale.mode === "renewal" ? " (renewal)" : ""}
                     </span>
                     <span className="text-muted-foreground">{new Date(sale.createdAt).toLocaleDateString()}</span>
                   </li>
