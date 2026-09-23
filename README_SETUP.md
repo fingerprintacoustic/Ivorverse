@@ -30,7 +30,7 @@ ivorverse-ai/
 
 ### Core Infrastructure ✅
 - **Database**: PostgreSQL with 13 tables (users, projects, chat, music, video, images, characters, subscriptions, etc.)
-- **Authentication**: Manus OAuth 2.0 integration
+- **Authentication**: Email/password with email verification and password reset (no OAuth)
 - **API**: tRPC with 50+ procedures for all features
 - **Storage**: S3-compatible file storage
 - **LLM Integration**: OpenAI-compatible API for AI responses
@@ -70,23 +70,28 @@ ivorverse-ai/
 
 ## Environment Variables
 
-The following environment variables are automatically injected:
+Copy `.env.example` to `.env` and fill it in. That file is the full, commented list:
 
 ```
-DATABASE_URL                    # PostgreSQL connection string
 JWT_SECRET                      # Session cookie signing key
-VITE_APP_ID                     # Manus OAuth application ID
-OAUTH_SERVER_URL                # Manus OAuth backend URL
-VITE_OAUTH_PORTAL_URL           # Manus login portal URL
-OWNER_OPEN_ID                   # Owner's Manus OpenID
-OWNER_NAME                      # Owner's name
-BUILT_IN_FORGE_API_URL          # Manus API base URL
-BUILT_IN_FORGE_API_KEY          # Manus API key (server-side)
-VITE_FRONTEND_FORGE_API_KEY     # Manus API key (frontend)
-VITE_FRONTEND_FORGE_API_URL     # Manus API URL (frontend)
-VITE_ANALYTICS_ENDPOINT         # Analytics endpoint
-VITE_ANALYTICS_WEBSITE_ID       # Analytics website ID
+APP_URL                         # Public app URL (email links, Stripe redirects)
+FIREBASE_SERVICE_ACCOUNT_JSON   # Firestore credentials (optional locally with ADC or emulators)
+FIREBASE_STORAGE_BUCKET         # Firebase Storage bucket
+ANTHROPIC_API_KEY               # AI provider
+OPENAI_API_KEY                  # AI provider
+E2B_API_KEY                     # App Builder sandbox / video rendering
+FAL_KEY                         # Music generation
+STRIPE_SECRET_KEY               # Billing
+STRIPE_WEBHOOK_SECRET           # Billing webhooks
+PLATFORM_FEE_PERCENT            # Marketplace fee (default 0)
+RESEND_API_KEY                  # Email sending
+EMAIL_FROM                      # Email sender
+OWNER_EMAIL                     # Owner notifications
+VITE_ANALYTICS_ENDPOINT         # Analytics endpoint (optional)
+VITE_ANALYTICS_WEBSITE_ID       # Analytics website ID (optional)
 ```
+
+Login is email/password only, so the old Manus OAuth variables (`VITE_APP_ID`, `OAUTH_SERVER_URL`, `VITE_OAUTH_PORTAL_URL`, `OWNER_OPEN_ID`) and Manus Forge variables are no longer used.
 
 ## Development
 
@@ -168,10 +173,11 @@ projects: router({
 
 ## Deployment
 
-### Via Manus Platform
-1. Click "Publish" button in the Management UI
-2. Select custom domain or use auto-generated `xxx.manus.space` domain
-3. Platform handles SSL, scaling, and monitoring
+### Via Firebase
+```bash
+npm run deploy
+```
+Builds the client and the Cloud Function, then runs `firebase deploy` (Hosting + Functions, see `firebase.json`).
 
 ### Via Docker (Self-hosted)
 ```bash
@@ -240,7 +246,7 @@ describe("auth.logout", () => {
 
 ## Security
 
-- **Authentication**: Manus OAuth with session cookies
+- **Authentication**: Email/password with a signed JWT session cookie (`server/_core/session.ts`)
 - **Authorization**: Role-based access control (user/admin)
 - **Rate Limiting**: Per-user rate limits based on subscription tier
 - **SQL Injection**: Drizzle ORM prevents SQL injection
@@ -249,11 +255,7 @@ describe("auth.logout", () => {
 
 ## Monitoring & Logging
 
-Logs are stored in `.manus-logs/`:
-- `devserver.log` - Server startup and errors
-- `browserConsole.log` - Client-side console output
-- `networkRequests.log` - HTTP requests and responses
-- `sessionReplay.log` - User interactions
+Server logs go to stdout (the terminal locally, Cloud Logging for the deployed function). Client-side errors show in the browser console.
 
 ## Support & Documentation
 

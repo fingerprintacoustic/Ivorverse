@@ -1,6 +1,6 @@
-# Web App Template (tRPC + Manus Auth + Database)
+# IvorVerse AI (tRPC + Firebase)
 
-This template gives you a React 19 + Tailwind 4 + Express 4 + tRPC 11 stack with Manus OAuth already wired. Procedures are your contracts, types flow end to end, and authentication "just works".
+A React 19 + Tailwind 4 + Express 4 + tRPC 11 stack backed by Firestore and Firebase Storage, with email/password authentication. Procedures are your contracts, types flow end to end, and authentication "just works".
 
 ---
 
@@ -8,7 +8,7 @@ This template gives you a React 19 + Tailwind 4 + Express 4 + tRPC 11 stack with
 
 - **tRPC-first:** define procedures in `server/routers.ts`, consume them with `trpc.*` hooks.
 - **Superjson out of the box:** return Drizzle rows directly—`Date` stays a `Date`.
-- **Auth baked in:** `/api/oauth/callback` handles Manus OAuth, `protectedProcedure` injects `ctx.user`.
+- **Auth baked in:** email/password login via `trpc.auth.*` sets a session cookie, `protectedProcedure` injects `ctx.user`.
 - **Gateway-ready:** all RPC traffic is under `/api/trpc`, making it easy to route at the edge.
 
 ---
@@ -37,7 +37,7 @@ client/src/lib/trpc.ts → tRPC client binding
 client/src/pages/ → Feature UI that calls trpc hooks
 ```
 
-Framework plumbing (OAuth, context, Vite bridge) lives under `server/_core`.
+Framework plumbing (sessions, context, Vite bridge) lives under `server/_core`.
 
 ---
 
@@ -82,7 +82,9 @@ Files in `client/public` are available at the root of your site—reference them
 
 ## Authentication Flow
 
-- Manus OAuth completes at `/api/oauth/callback` and drops a session cookie.
+- Login is email/password only (there is no OAuth). Users sign up at `/signup`, verify their email via the link sent to `/verify-email`, then sign in at `/login`; `/forgot-password` and `/reset-password` handle resets. The pages call `trpc.auth.signup`, `login`, `verifyEmail`, `requestPasswordReset` and `resetPassword`.
+- A successful login sets the `app_session_id` cookie, a JWT signed with `JWT_SECRET` and keyed by user id (`server/_core/session.ts`).
+- To send someone to sign in, use `getLoginUrl()` from `client/src/const.ts`; it returns `/login`, adding `?next=<current path>` so they come back afterwards.
 - Each request to `/api/trpc` builds context via `server/_core/context.ts`, making the current user available as `ctx.user`.
 - Wrap protected logic in `protectedProcedure`; public access uses `publicProcedure`.
 - Frontend reads auth state with `trpc.auth.me.useQuery()` and invokes `trpc.auth.logout.useMutation()`—no cookie plumbing required.
@@ -91,20 +93,19 @@ Files in `client/public` are available at the root of your site—reference them
 
 ## Environment Variables
 
-Available pre-defined system envs:
-- `DATABASE_URL`: MySQL/TiDB connection string
+Copy `.env.example` to `.env` and fill it in; that file is the full, commented list. The main ones:
 - `JWT_SECRET`: Session cookie signing secret
-- `VITE_APP_ID`: Manus OAuth application ID
-- `OAUTH_SERVER_URL`: Manus OAuth backend base URL
-- `VITE_OAUTH_PORTAL_URL`: Manus login portal URL (frontend)
-- `OWNER_OPEN_ID`, `OWNER_NAME`: Owner's info
-- `BUILT_IN_FORGE_API_URL`: Manus built-in apis (includes llm, storage, data_api, notification, etc...)
-- `BUILT_IN_FORGE_API_KEY`: Bearer token used by Manus built-in apis (server-side)
-- `VITE_FRONTEND_FORGE_API_KEY`: Bearer token for frontend access to Manus built-in apis
-- `VITE_FRONTEND_FORGE_API_URL`: Manus built-in apis URL for frontend
+- `APP_URL`: Public URL of the app, used in verification/reset emails and Stripe redirects
+- `FIREBASE_SERVICE_ACCOUNT_JSON`: Service account for Firestore (optional locally if you use `gcloud auth application-default login` or the emulators)
+- `FIREBASE_STORAGE_BUCKET`: Firebase Storage bucket for generated images and uploads
+- `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`: AI providers
+- `E2B_API_KEY`, `FAL_KEY`: App Builder sandbox and music generation
+- `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `PLATFORM_FEE_PERCENT`: Billing and marketplace
+- `RESEND_API_KEY`, `EMAIL_FROM`, `OWNER_EMAIL`: Email (verification, password reset, owner notifications)
 
-Do not edit these directly in code or commit `.env` files.
-The envs above are system envs, when use env in website code, refer `server/_core/env.ts` for available list.
+No OAuth variables (`VITE_APP_ID`, `OAUTH_SERVER_URL`, `VITE_OAUTH_PORTAL_URL`) or Manus Forge variables are needed any more.
+
+Do not commit `.env` files.
 
 ---
 
@@ -1092,29 +1093,10 @@ Use `storagePut()` to upload files (see S3 File Storage section).
 
 ---
 
-## Manus OAuth Best Practices
+## Login Redirects & Emailed Links
 
-**Key Rule:** Always use `window.location.origin` for redirect URLs—never hardcode domains or use `req.host`. Frontend and backend run on separate servers, so the frontend must pass its origin explicitly.
+**Sending users to sign in:** use `getLoginUrl()` from `client/src/const.ts`. It returns `/login?next=<current path>` (or plain `/login`), and the login page only follows `next` if `safeNextPath()` accepts it as a same-site path, so it can't be used as an open redirect.
 
-**Unsupported browsers:** Safari Private Browsing, Firefox Strict ETP, Brave Aggressive Shields, or any browser blocking cookies.
+**Links the server emails out** (verification, password reset, Stripe redirects): build them from `APP_URL`, never from the request's `Origin` or `Host` header. Those headers are attacker-controlled, so they are only trusted in development (see `server/_core/appUrl.ts`).
 
-**Anti-patterns:**
-```ts
-// ❌ Never construct URLs from env vars or patterns
-const url = `https://${projectName}.manus.space/callback`;
-const url = `https://${process.env.APP_SUBDOMAIN}.example.com/verify`;
-```
-
-**Correct approach:** This template already implements the pattern correctly:
-- `client/src/const.ts`: `getLoginUrl(returnPath?)` encodes origin + returnPath in state
-- `server/_core/oauth.ts`: `parseState()` extracts origin from state for redirects
-
-**For invite/magic links:** When backend generates URLs, frontend must pass origin in the request:
-```ts
-// Frontend
-const createInvite = trpc.invites.create.useMutation();
-await createInvite.mutateAsync({ eventId: "123", origin: window.location.origin });
-
-// Backend - use input.origin to build the URL
-const inviteUrl = `${input.origin}/events/${eventId}/join?token=${token}`;
-```
+**Unsupported browsers:** anything that blocks first-party cookies (the session lives in the `app_session_id` cookie).
