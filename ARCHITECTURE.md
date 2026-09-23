@@ -2,7 +2,7 @@
 
 ## Overview
 
-IvorVerse AI is a unified SaaS platform combining AI-powered creative and productivity tools. The platform is built on a modern stack with React frontend, Express/tRPC backend, PostgreSQL database, and integrated AI services.
+IvorVerse AI is a unified SaaS platform combining AI-powered creative and productivity tools. The platform is built on a modern stack with React frontend, Express/tRPC backend, Firestore database, and integrated AI services, deployed on Firebase.
 
 ## Technology Stack
 
@@ -16,34 +16,37 @@ IvorVerse AI is a unified SaaS platform combining AI-powered creative and produc
 **Backend:**
 - Express 4 with TypeScript
 - tRPC 11 for RPC procedures
-- Drizzle ORM for database access
-- Built-in Manus LLM integration
-- Image generation API
-- Voice transcription API
-- Web search/data API
+- Firebase Admin SDK for Firestore and Storage access (`server/db.ts`, `server/storage.ts`)
+- Claude via the Anthropic API for the chat assistant, including web search
+- OpenAI for general completions, image generation (gpt-image-1) and transcription (Whisper)
+- fal.ai (ACE-Step) for music, E2B sandboxes for App Builder and video rendering
+- Resend for email
 
 **Database:**
-- PostgreSQL (MySQL compatible)
-- Drizzle migrations for schema management
+- Firestore; no migrations, composite indexes in `firestore.indexes.json`
 
 **Authentication:**
-- Manus OAuth 2.0
-- Session-based authentication with cookies
+- Email/password with email verification and password reset
+- Signed JWT session cookie (`server/_core/session.ts`)
+
+**Hosting:**
+- Firebase Hosting for the client; the `api` Cloud Function serves `/api/**`
+- `jobWorker` Cloud Function for long-running background jobs
 
 **Payments:**
 - Stripe integration for subscription management
 
 **Storage:**
-- S3-compatible storage for files, images, videos
+- Firebase Storage for files, images, videos
 
-## Database Schema
+## Data Model
 
-### Core Tables
+Firestore collections with numeric document ids. The main ones:
 
 **users**
 - id (PK)
-- openId (unique, from OAuth)
-- email
+- email (login identifier)
+- passwordHash
 - name
 - role (user | admin)
 - subscriptionTier (free | pro | business)
@@ -76,7 +79,7 @@ IvorVerse AI is a unified SaaS platform combining AI-powered creative and produc
 - userId (FK)
 - projectId (FK, nullable)
 - filename
-- fileKey (S3 reference)
+- fileKey (Firebase Storage key)
 - url
 - mimeType
 - size
@@ -250,7 +253,7 @@ IvorVerse AI is a unified SaaS platform combining AI-powered creative and produc
 - File uploads scanned for malware
 - API keys stored in environment variables
 - CORS configured for frontend domain only
-- SQL injection prevention via Drizzle ORM
+- Firestore rules deny all direct client access; only the server reads and writes
 - XSS protection via React's built-in escaping
 
 ## Performance Optimization

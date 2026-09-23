@@ -8,7 +8,7 @@
 
 ## Phase 2: Core Infrastructure
 - [x] Set up Stripe integration for payments
-- [x] Implement user authentication (Manus OAuth)
+- [x] Implement user authentication (originally Manus OAuth, now email/password)
 - [x] Create database schema for users, projects, subscriptions
 - [x] Build DashboardLayout with sidebar navigation
 - [x] Implement subscription tier logic (Free, Pro, Business)

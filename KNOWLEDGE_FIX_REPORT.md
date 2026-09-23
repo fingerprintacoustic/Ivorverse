@@ -1,5 +1,7 @@
 # IvorVerse AI - Knowledge Currency & Web Search Fix Report
 
+> **Historical report.** Written in June 2026, before the app moved off Manus to Firebase. Mentions of Manus OAuth, Manus Forge APIs, Drizzle/MySQL and `*.manus.computer` URLs describe that older setup; login is now email/password, data is in Firestore, and the app deploys to Firebase.
+
 **Date:** June 6, 2026  
 **Status:** ✅ LIVE WEB SEARCH IMPLEMENTED
 

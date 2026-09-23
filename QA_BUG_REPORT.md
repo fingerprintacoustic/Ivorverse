@@ -1,5 +1,7 @@
 # IvorVerse AI - QA Bug Report & Findings
 
+> **Historical report.** Written in June 2026, before the app moved off Manus to Firebase. Mentions of Manus OAuth, Manus Forge APIs, Drizzle/MySQL and `*.manus.computer` URLs describe that older setup; login is now email/password, data is in Firestore, and the app deploys to Firebase.
+
 **Report Date:** June 5, 2026  
 **Testing Period:** Comprehensive QA Testing  
 **Tester:** Automated QA Suite + Manual Testing  

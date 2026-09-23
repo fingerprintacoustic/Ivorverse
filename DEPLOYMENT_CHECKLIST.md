@@ -1,5 +1,7 @@
 # IvorVerse AI - Production Deployment Checklist
 
+> The status marks and scores below were recorded in June 2026, when the app still ran on Manus. It has since moved to Firebase (Firestore, Storage, Hosting, Cloud Functions) with email/password login; the domain, deployment and support steps have been updated for that.
+
 ## Phase 1: Production Deployment ✅
 
 ### Pre-Deployment Verification
@@ -13,7 +15,7 @@
 - [x] Chat memory context working
 
 ### Deployment Configuration
-- [x] HTTPS enabled (automatic with Manus)
+- [x] HTTPS enabled (automatic with Firebase Hosting)
 - [x] Production mode enabled
 - [x] Environment variables set
 - [x] Database connection verified
@@ -23,7 +25,7 @@
 ### Health Checks
 - [x] Server startup successful
 - [x] Database connectivity verified
-- [x] OAuth authentication working
+- [x] Authentication working
 - [x] tRPC endpoints accessible
 - [x] Error logging functional
 - [x] Memory usage stable
@@ -35,25 +37,18 @@
 ## Phase 2: Domain Configuration
 
 ### Current Setup
-- **Dev URL:** https://3000-idlw612lw9rf1xcpjwg1x-c4063d6d.us2.manus.computer
-- **Project Name:** omnicreator-ai (rebrand to ivorverse-ai)
+- **Firebase project:** `ivorverse-ai` (see `.firebaserc`)
+- **Default URL:** https://ivorverse-ai.web.app
 
 ### Domain Requirements
 ```
 Primary Domain:     ivorverse.ai
-App Subdomain:      app.ivorverse.ai
-API Subdomain:      api.ivorverse.ai
 ```
+
+The client and API share one origin: Firebase Hosting serves the client and rewrites `/api/**` to the `api` Cloud Function, so no separate API subdomain is needed.
 
 ### DNS Configuration (To Be Set)
-```
-CNAME Records:
-- app.ivorverse.ai → manus-app-proxy.example.com
-- api.ivorverse.ai → manus-api-proxy.example.com
-
-A Records:
-- ivorverse.ai → [Manus IP Address]
-```
+Add `ivorverse.ai` under Firebase console → Hosting → Add custom domain. Firebase shows the exact A/TXT records to create at your DNS provider and provisions the SSL certificate once they resolve. Links in emails and Stripe redirects use `APP_URL`, which falls back to `https://ivorverse.ai` when unset (`server/_core/appUrl.ts`).
 
 **Status:** ⏳ AWAITING DOMAIN CONFIGURATION
 
@@ -176,7 +171,7 @@ A Records:
 | Research | 8/10 | ✅ Web search integrated |
 | Image Generation | 8/10 | ✅ Generation & download working |
 | Downloads | 9/10 | ✅ Multiple format support |
-| Authentication | 9/10 | ✅ OAuth working |
+| Authentication | 9/10 | ✅ Login working |
 | Dashboard | 8/10 | ✅ User projects displayed |
 | Mobile Responsiveness | 8/10 | ✅ Responsive design implemented |
 
@@ -214,16 +209,16 @@ A Records:
 
 ### URLs for Testing
 ```
-Landing Page:    https://3000-idlw612lw9rf1xcpjwg1x-c4063d6d.us2.manus.computer
-Dashboard:       https://3000-idlw612lw9rf1xcpjwg1x-c4063d6d.us2.manus.computer/dashboard
-Chat:            https://3000-idlw612lw9rf1xcpjwg1x-c4063d6d.us2.manus.computer/dashboard/chat
-Research:        https://3000-idlw612lw9rf1xcpjwg1x-c4063d6d.us2.manus.computer/dashboard/research
-Images:          https://3000-idlw612lw9rf1xcpjwg1x-c4063d6d.us2.manus.computer/dashboard/images
-Admin:           https://3000-idlw612lw9rf1xcpjwg1x-c4063d6d.us2.manus.computer/admin
+Landing Page:    https://ivorverse-ai.web.app
+Dashboard:       https://ivorverse-ai.web.app/dashboard
+Chat:            https://ivorverse-ai.web.app/dashboard/chat
+Research:        https://ivorverse-ai.web.app/dashboard/research
+Images:          https://ivorverse-ai.web.app/dashboard/images
+Admin:           https://ivorverse-ai.web.app/admin
 ```
 
 ### Testing Guide
-1. **User Registration:** Create account via OAuth
+1. **User Registration:** Sign up at `/signup` and confirm the verification email
 2. **Chat Testing:** Send message, verify response and context
 3. **Follow-up Testing:** Ask follow-up question, verify context maintained
 4. **Image Generation:** Generate image, test download
@@ -247,29 +242,28 @@ Admin:           https://3000-idlw612lw9rf1xcpjwg1x-c4063d6d.us2.manus.computer/
 
 ## Deployment Steps
 
-### Step 1: Click "Publish" Button
-1. Go to Management UI
-2. Click "Publish" button in header
-3. Wait for deployment to complete
+### Step 1: Set Secrets and Deploy
+1. Store each secret the functions need (listed in `functions/index.ts`) with `firebase functions:secrets:set <NAME>`
+2. Run `npm run deploy` (builds the client and functions, then runs `firebase deploy`)
+3. Wait for Hosting, Functions and Firestore rules/indexes to finish deploying
 
 ### Step 2: Verify Deployment
 ```bash
 # Check if app is accessible
-curl https://3000-idlw612lw9rf1xcpjwg1x-c4063d6d.us2.manus.computer/health
+curl -I https://ivorverse-ai.web.app/
 
-# Check API endpoints
-curl https://3000-idlw612lw9rf1xcpjwg1x-c4063d6d.us2.manus.computer/api/trpc/auth.me
+# Check the API (returns the current user, null when signed out)
+curl https://ivorverse-ai.web.app/api/trpc/auth.me
 ```
 
 ### Step 3: Configure Custom Domain
-1. Go to Settings → Domains
-2. Add custom domain: ivorverse.ai
-3. Configure DNS records
-4. Wait for SSL certificate
+1. Firebase console → Hosting → Add custom domain: ivorverse.ai
+2. Create the DNS records Firebase shows
+3. Wait for the SSL certificate
 
 ### Step 4: Create Admin Account
 1. Create user via registration
-2. Update role to 'admin' in database
+2. Set `role: "admin"` on their document in the Firestore `users` collection
 3. Provide admin credentials
 
 ### Step 5: Start Beta Testing
@@ -299,10 +293,9 @@ curl https://3000-idlw612lw9rf1xcpjwg1x-c4063d6d.us2.manus.computer/api/trpc/aut
 ## Support & Escalation
 
 ### Issues During Deployment
-1. Check dev server logs: `.manus-logs/devserver.log`
-2. Check browser console: `.manus-logs/browserConsole.log`
-3. Check network requests: `.manus-logs/networkRequests.log`
-4. Restart server if needed: `webdev_restart_server`
+1. Check function logs: `firebase functions:log` or Cloud Logging in the Google Cloud console
+2. Check the browser console and network tab for client-side errors
+3. Roll back Hosting if needed: Firebase console → Hosting → release history
 
 ### Post-Deployment Support
 - Monitor error logs daily
@@ -314,7 +307,7 @@ curl https://3000-idlw612lw9rf1xcpjwg1x-c4063d6d.us2.manus.computer/api/trpc/aut
 
 **Deployment Status:** ✅ READY FOR PRODUCTION
 
-**Next Action:** Click "Publish" button in Management UI to deploy to production.
+**Next Action:** Run `npm run deploy` to deploy to production.
 
 **Estimated Deployment Time:** 5-10 minutes
 

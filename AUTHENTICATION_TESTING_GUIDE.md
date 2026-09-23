@@ -6,9 +6,10 @@ This guide provides step-by-step instructions for testing the complete email/pas
 
 ## Test Environment
 
-- **Frontend:** http://localhost:3000 (or https://3000-xxx.manus.computer)
+- **Frontend:** http://localhost:3000 (or https://ivorverse-ai.web.app)
 - **Backend:** tRPC API at /api/trpc
-- **Database:** MySQL with Drizzle ORM
+- **Database:** Firestore (`users` collection)
+- **Email:** Verification and reset links are sent through Resend, so set `RESEND_API_KEY` and use an inbox you can read. If sending fails, the server logs a warning and no link arrives.
 
 ## Test Scenarios
 
@@ -30,8 +31,8 @@ This guide provides step-by-step instructions for testing the complete email/pas
 **Expected Results:**
 
 - Success message displayed: "Account created. Please verify your email."
-- Verification token displayed (for testing purposes)
-- User created in database with:
+- Verification email sent with a link to `/verify-email?token=...`
+- User created in Firestore with:
   - `emailVerified = false`
   - `emailVerificationToken` set
   - `emailVerificationExpires` set to 24 hours from now
@@ -41,7 +42,7 @@ This guide provides step-by-step instructions for testing the complete email/pas
 
 | Test Case | Input | Expected Result |
 |-----------|-------|-----------------|
-| Valid signup | All fields correct | Account created, verification token shown |
+| Valid signup | All fields correct | Account created, verification email sent |
 | Duplicate email | Existing email | Error: "Email already registered" |
 | Short password | "pass" | Error: "Password must be at least 8 characters" |
 | Mismatched passwords | Different confirm | Error: "Passwords do not match" |
@@ -54,10 +55,8 @@ This guide provides step-by-step instructions for testing the complete email/pas
 
 **Steps:**
 
-1. After signup, copy the verification token
-2. Navigate to http://localhost:3000/verify-email
-3. Paste token in "Verification Token" field
-4. Click "Verify Email"
+1. After signup, open the verification email and click the link. It opens `/verify-email?token=...` and verifies automatically.
+2. Alternatively, navigate to http://localhost:3000/verify-email, paste the token from the link into the "Verification Token" field, and click "Verify Email"
 
 **Expected Results:**
 
@@ -122,7 +121,7 @@ This guide provides step-by-step instructions for testing the complete email/pas
 **Expected Results:**
 
 - Success message: "Password reset link sent to your email."
-- Reset token displayed (for testing purposes)
+- Reset email sent with a link to `/reset-password?token=...`
 - User record updated with:
   - `passwordResetToken` set
   - `passwordResetExpires` set to 1 hour from now
@@ -131,7 +130,7 @@ This guide provides step-by-step instructions for testing the complete email/pas
 
 | Test Case | Input | Expected Result |
 |-----------|-------|-----------------|
-| Valid email | Existing email | Reset link sent, token shown |
+| Valid email | Existing email | Reset link emailed |
 | Non-existent email | Non-existent email | Generic message (no email leak) |
 | Invalid email | "notanemail" | Error: "Invalid email address" |
 | Empty email | Leave blank | Error: "Email is required" |
@@ -142,11 +141,11 @@ This guide provides step-by-step instructions for testing the complete email/pas
 
 **Prerequisites:**
 
-- Password reset requested and token obtained
+- Password reset requested and reset email received
 
 **Steps:**
 
-1. Navigate to http://localhost:3000/reset-password?token=XXX (use token from forgot password)
+1. Click the link in the reset email (it opens `/reset-password?token=...`)
 2. Enter new password:
    - New Password: "NewPassword456!"
    - Confirm Password: "NewPassword456!"

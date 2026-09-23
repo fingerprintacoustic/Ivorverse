@@ -44,7 +44,7 @@ While the authentication system includes rate limiting, CAPTCHA provides additio
 3. Fill in the form:
    - **Label:** OmniCreator AI Signup
    - **reCAPTCHA type:** reCAPTCHA v3
-   - **Domains:** Your domain (e.g., omnicreator-e8gf7egj.manus.space)
+   - **Domains:** Your domains (e.g., ivorverse.ai, ivorverse-ai.web.app, localhost)
 4. Accept terms and submit
 5. Copy the **Site Key** and **Secret Key**
 
