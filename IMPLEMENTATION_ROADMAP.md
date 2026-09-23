@@ -9,7 +9,7 @@
 ## Executive Summary
 
 IvorVerse AI has a solid foundation with:
-- ✅ Robust authentication system (Manus OAuth)
+- ✅ Robust authentication system (email/password with verification and reset)
 - ✅ Multi-turn conversation with context memory
 - ✅ Live web search integration
 - ✅ Admin dashboard and user management
@@ -26,7 +26,7 @@ However, **15 critical features require implementation** to reach beta-ready sta
 2. **Follow-up Memory** - Full conversation history
 3. **Research Mode** - Web search with citations
 4. **User Management** - Admin controls
-5. **Authentication** - OAuth login/logout
+5. **Authentication** - Email/password login/logout
 
 ---
 

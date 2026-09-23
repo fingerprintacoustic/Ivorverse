@@ -1,43 +1,64 @@
-# IvorVerse AI (tRPC + Firebase)
+# IvorVerse AI
 
-A React 19 + Tailwind 4 + Express 4 + tRPC 11 stack backed by Firestore and Firebase Storage, with email/password authentication. Procedures are your contracts, types flow end to end, and authentication "just works".
+A React 19 + Tailwind 4 + Express 4 + tRPC 11 app backed by Firestore and Firebase Storage, with email/password authentication. It deploys to Firebase: Hosting serves the client and a Cloud Function serves the API. Procedures are your contracts, and types flow end to end.
 
 ---
 
 ## Quick Facts
 
 - **tRPC-first:** define procedures in `server/routers.ts`, consume them with `trpc.*` hooks.
-- **Superjson out of the box:** return Drizzle rows directly—`Date` stays a `Date`.
+- **Superjson out of the box:** `Date` values survive the round trip as `Date`.
 - **Auth baked in:** email/password login via `trpc.auth.*` sets a session cookie, `protectedProcedure` injects `ctx.user`.
-- **Gateway-ready:** all RPC traffic is under `/api/trpc`, making it easy to route at the edge.
+- **One API prefix:** all RPC traffic is under `/api/trpc`, and Firebase Hosting rewrites `/api/**` to the `api` Cloud Function.
 
 ---
 
-## Build Loop (Four Touch Points)
+## Getting Started
 
-1. Update schema in `drizzle/schema.ts`, then run `pnpm db:push`.
-2. Add database helpers in `server/db.ts` (return raw results).
-3. Add or extend procedures in `server/routers.ts`, then wire the UI with `trpc.*.useQuery/useMutation`.
-4. Build frontend experience according to `Frontend Workflow`
-5. Cover your changes with Vitest specs inside `server/*.test.ts` (see `server/auth.logout.test.ts`) and run `pnpm test`.
+```bash
+npm install
+cp .env.example .env   # then fill it in, see Environment Variables
+npm run dev            # Express + Vite dev server on http://localhost:3000
+```
 
-That's it—no manual REST routes, no Axios client, no shared contract files.
+Firestore needs credentials: run `gcloud auth application-default login`, set `FIREBASE_SERVICE_ACCOUNT_JSON`, or start the emulators with `npm run emulators`.
+
+| Script | What it does |
+| --- | --- |
+| `npm run dev` | Dev server with hot reload |
+| `npm run build` | Builds the client to `dist/public` and the Node server to `dist/index.js` |
+| `npm run build:functions` | Bundles the Cloud Functions entry (`functions/index.ts`) |
+| `npm run check` | Type-checks with `tsc` |
+| `npm test` | Runs the Vitest suite |
+| `npm run emulators` | Starts the Firebase emulators |
+| `npm run deploy` | Builds everything and runs `firebase deploy` |
+
+---
+
+## Build Loop
+
+1. Add or extend data access helpers in `server/db.ts` (Firestore). If a new query filters or sorts on several fields, add its composite index to `firestore.indexes.json`.
+2. Add or extend procedures in `server/routers.ts`, then wire the UI with `trpc.*.useQuery/useMutation`.
+3. Build the frontend following `Frontend Workflow`.
+4. Cover your changes with Vitest specs in `server/*.test.ts` (see `server/auth.logout.test.ts`) and run `npm test`.
+
+No manual REST routes, no Axios client, no shared contract files.
 
 ---
 
 ## Key Files
 
 ```
-server/auth.logout.test.ts → Reference sample vitest test file
-drizzle/schema.ts → Database tables & types
-server/db.ts → Query helpers (reuse across procedures)
+server/db.ts → Firestore data access (entity types + query helpers)
 server/routers.ts → tRPC procedures (auth + features)
+server/storage.ts → Firebase Storage helpers
+server/_core/ → Sessions, context, jobs, AI helpers, Vite bridge
+functions/index.ts → Cloud Functions entry (api + background job worker)
 client/src/App.tsx → Routes wiring & layout shells
 client/src/lib/trpc.ts → tRPC client binding
 client/src/pages/ → Feature UI that calls trpc hooks
+firebase.json, firestore.rules, firestore.indexes.json → Firebase config
 ```
-
-Framework plumbing (sessions, context, Vite bridge) lives under `server/_core`.
 
 ---
 
@@ -55,28 +76,22 @@ client/
     App.tsx       ← Routes & layout
     main.tsx      ← Providers
     index.css     ← global style
-drizzle/          ← Schema & migrations
 server/
-  db.ts           ← Query helpers
+  db.ts           ← Firestore data access
   routers.ts      ← tRPC procedures
-storage/          ← S3 helpers
+  storage.ts      ← Firebase Storage helpers
+  _core/          ← Framework plumbing and AI/job helpers
+functions/        ← Cloud Functions entry
 shared/           ← Shared constants & types
 ```
 
-Only touch the files under "←" markers. Anything under `server/_core` or other tooling directories is framework-level—avoid editing unless you are extending the infrastructure.
-
 ### ⚠️ Handling Images & Media
 
-**DO NOT** store images, videos, or large assets in `client/public/` or `client/src/assets/`. Local media files will cause deployment timeouts.
+**DO NOT** store images, videos, or large assets in `client/public/` or `client/src/assets/`. Local media files bloat the Hosting deploy.
 
-**Required workflow:**
-1. Upload assets using the CLI: `manus-upload-file --webdev path/to/image.png`
-2. Use the returned storage path directly in your code: `<img src="/manus-storage/image_a1b2c3d4.png" />`
-3. Store the original local file in `/home/ubuntu/webdev-static-assets/` (outside the project directory)
+Put them in Firebase Storage instead: from server code use `storagePut()` (see File Storage), or upload static assets to the bucket with the Firebase console or `gcloud storage cp` and reference their URLs.
 
-Only small configuration files like `favicon.ico`, `robots.txt`, and `manifest.json` belong in `client/public/`.
-
-Files in `client/public` are available at the root of your site—reference them with absolute paths (`/robots.txt`, etc.) from HTML templates, JSX, or meta tags.
+Only small configuration files like `favicon.ico`, `robots.txt`, and `manifest.json` belong in `client/public/`. Files there are served from the site root, so reference them with absolute paths (`/robots.txt`, etc.).
 
 ---
 
@@ -108,7 +123,6 @@ No OAuth variables (`VITE_APP_ID`, `OAUTH_SERVER_URL`, `VITE_OAUTH_PORTAL_URL`) 
 Do not commit `.env` files.
 
 ---
-
 ## Frontend Workflow
 
 1. Choose a design style before you write any frontend code according to Design Guide (color, font, shadow, art style). Remember to edit `client/src/index.css` for global theming and add needed font using google font cdn in `client/index.html`.
@@ -186,9 +200,8 @@ Bake motion taste in from the first line of code. Snappy, physically intuitive i
 
 ## Feature Checklist
 
-- [ ] Tables updated in `drizzle/schema.ts`, migrations pushed (`pnpm db:push`)
-- [ ] Query helper added in `server/db.ts` (returns raw Drizzle rows)
-- [ ] Procedure created in `server/routers.ts` (choose `public` vs `protected`)
+- [ ] Entity type and query helper added in `server/db.ts`
+- [ ] Composite index added to `firestore.indexes.json` if the query needs one- [ ] Procedure created in `server/routers.ts` (choose `public` vs `protected`)
 - [ ] UI calls the procedure via `trpc.*.useQuery/useMutation`
 - [ ] Success + error paths verified in the browser
 
@@ -204,9 +217,6 @@ Dashboard & Layout:
 
 Chat & Messaging:
 - `client/src/components/AIChatBox.tsx` - Full-featured chat interface with message history, streaming support, and markdown rendering. Use this for any chat/conversation UI instead of building from scratch.
-
-Maps:
-- `client/src/components/Map.tsx` - Google Maps integration with proxy authentication. Provides MapView component with onMapReady callback for initializing Google Maps services (Places, Geocoder, Directions, Drawing, etc.). All map functionality works directly in the browser.
 
 When implementing features that match these categories, MUST evaluate the component first to decide whether to use or customize it.
 
@@ -246,272 +256,57 @@ adminOnlyProcedure: protectedProcedure.use(({ ctx, next }) => {
 ```
 
 **Managing Admins**
-- To promote a user to admin, update the `role` field directly in the database via the system UI or SQL
-- If you need additional roles beyond `admin`/`user`, extend the enum in `drizzle/schema.ts` and push the migration
+- To promote a user to admin, set `role: "admin"` on their document in the Firestore `users` collection (for example in the Firebase console).
+- To add roles beyond `admin`/`user`, extend the `role` union in `server/db.ts` and the checks in `server/_core/trpc.ts`.
 
 ---
 
-## LLM Integration
+## AI Helpers
 
-Use the preconfigured LLM helpers. Credentials are injected from the platform (no manual setup required).
+All of these run server-side only (inside tRPC procedures or jobs), so API keys never reach the browser.
 
-```ts
-import { invokeLLM } from "./server/_core/llm";
+- **Chat assistant:** `server/_core/orchestrator.ts` drives Claude through the Anthropic SDK (`ANTHROPIC_API_KEY`) with tools for web search, image generation, memory, and starting app-build/music jobs. Add a tool by declaring it in `TOOLS` and handling it in `executeTool()`.
+- **General completions:** `invokeLLM()` in `server/_core/llm.ts` calls the OpenAI Chat Completions API (`OPENAI_API_KEY`). It supports `tools`, `tool_choice` and `response_format` (JSON Schema). Pass `model` explicitly. `listLLMModels()` lists the models the key can use.
+- **Images:** `generateImage({ prompt, originalImages? })` in `server/_core/imageGeneration.ts` uses OpenAI `gpt-image-1` and stores the result with `storagePut()`.
+- **Transcription:** `transcribeAudio({ audioUrl, language?, prompt? })` in `server/_core/voiceTranscription.ts` uses OpenAI Whisper and returns the native Whisper response (`text`, `language`, `segments`). It enforces a 16MB limit.
+- **Music:** `server/_core/musicGeneration.ts` (ACE-Step via fal.ai, `FAL_KEY`).
+- **App Builder and video rendering:** `server/_core/appBuilder.ts` and `videoGeneration.ts` run in an E2B sandbox (`E2B_API_KEY`).
 
-/**
- * Simple chat completion
- * type Role = "system" | "user" | "assistant" | "tool" | "function";
- * type TextContent = {
- *   type: "text";
- *   text: string;
- * };
- *
- * type ImageContent = {
- *   type: "image_url";
- *   image_url: {
- *     url: string;
- *     detail?: "auto" | "low" | "high";
- *   };
- * };
- *
- * type FileContent = {
- *   type: "file_url";
- *   file_url: {
- *     url: string;
- *     mime_type?: "audio/mpeg" | "audio/wav" | "application/pdf" | "audio/mp4" | "video/mp4" ;
- *   };
- * };
- *
- * export type Message = {
- *   role: Role;
- *   content: string | Array<ImageContent | TextContent | FileContent>
- * };
- *
- * Supported parameters:
- * messages: Array<{
- *   role: 'system' | 'user' | 'assistant' | 'tool',
- *   content: string | { tool_call: { name: string, arguments: string } }
- * }>
- * tool_choice?: 'none' | 'auto' | 'required' | { type: 'function', function: { name: string } }
- * tools?: Tool[]
- */
-const response = await invokeLLM({
-  messages: [
-    { role: "system", content: "You are a helpful assistant." },
-    { role: "user", content: "Hello, world!" },
-  ],
-});
-```
+Work that can outlast a request (Firebase Hosting cuts proxied requests off at 60s) goes through `enqueueJob()` in `server/_core/jobs.ts`: the API writes a `jobs/{id}` document and returns, the `jobWorker` Cloud Function runs it with a 9-minute budget, and the client polls. Locally (no Cloud Functions), jobs run in-process instead.
 
-Tips
-- Always call llm functions from server-side code (e.g., inside tRPC procedures), to avoid exposing your API key.
-- LLM calls deduct from this project's credit balance.
-- All models support streaming, but `invokeLLM()` doesn't expose `stream` — modify the helper to pass `stream: true` and parse the SSE response if you need it. When proxying SSE, listen on `res` close (not `req`) and guard with a `finished` flag, or the upstream gets aborted after the first event.
-- LLM responses often contain markdown. Use `<Streamdown>{content}</Streamdown>` (imported from `streamdown`) to render markdown content with proper formatting and streaming support.
-
-### Listing Available Models
-
-```ts
-import { listLLMModels } from "./server/_core/llm";
-
-const { data } = await listLLMModels();
-const ids = data.map(m => m.id);
-```
-
-Returns OpenAI-standard model metadata for each available ID. From the project shell you can also peek at it directly: `curl "$BUILT_IN_FORGE_API_URL/v1/models" -H "Authorization: Bearer $BUILT_IN_FORGE_API_KEY"`.
-
-**Combine with `invokeLLM`** to discover IDs at runtime instead of hardcoding:
-
-```ts
-import { invokeLLM, listLLMModels } from "./server/_core/llm";
-
-const { data } = await listLLMModels();
-const model = data.find(m => m.id.startsWith("claude-"))?.id;
-
-const response = await invokeLLM({
-  model,
-  messages: [{ role: "user", content: "Hello" }],
-});
-```
-
-### Thinking / Reasoning
-
-`invokeLLM()` forwards `thinking` and `reasoning` extension params unchanged (no defaults). Per model family:
-
-- OpenAI gpt-5 family — `reasoning: { effort: "minimal" | "low" | "medium" | "high" }`
-- Anthropic claude family — `thinking: { type: "enabled", budget_tokens: 2048 }`
-- Google gemini family — `thinking: { budget_tokens: 1024 }`
-
-```ts
-await invokeLLM({
-  model: "claude-sonnet-4-6",
-  messages: [...],
-  thinking: { type: "enabled", budget_tokens: 2048 },
-});
-
-await invokeLLM({
-  model: "gpt-5",
-  messages: [...],
-  reasoning: { effort: "low" },
-});
-```
-
-For the exact shape per model, check `capabilities.thinking_example` from the `/models` catalog (see Tips above).
-
-### Structured Responses (JSON Schema)
-
-Ask the model to return structured JSON via `response_format`:
-
-```ts
-import { invokeLLM } from "./server/_core/llm";
-
-const structured = await invokeLLM({
-  messages: [
-    { role: "system", content: "You are a helpful assistant designed to output JSON." },
-    { role: "user", content: "Extract the name and age from the following text: \"My name is Alice and I am 30 years old.\"" },
-  ],
-  response_format: {
-    type: "json_schema",
-    json_schema: {
-      name: "person_info",
-      strict: true,
-      schema: {
-        type: "object",
-        properties: {
-          name: { type: "string", description: "The name of the person" },
-          age: { type: "integer", description: "The age of the person" },
-        },
-        required: ["name", "age"],
-        additionalProperties: false,
-      },
-    },
-  },
-});
-
-// The model responds with JSON content matching the schema.
-// Access via `structured.choices[0].message.content` and JSON.parse if needed.
-```
-The helpers mirror the Python SDK semantics but produce JavaScript-first code, keeping credentials inside the server and ensuring every environment has access to the same token.
-
----
-
-## Voice Transcription Integration
-
-Use the preconfigured voice transcription helper that converts speech to text using Whisper API, no manual setup required.
-
-Example usage:
-```ts
-import { transcribeAudio } from "./server/_core/voiceTranscription";
-
-const result = await transcribeAudio({
-  audioUrl: "https://storage.example.com/audio/recording.mp3",
-  language: "en", // Optional: helps improve accuracy
-  prompt: "Transcribe meeting notes" // Optional: context hint
-});
-
-// Returns native Whisper API response
-// result.text - Full transcription
-// result.language - Detected language (ISO-639-1)
-// result.segments - Timestamped segments with metadata
-```
-
-Tips
-- Accepts URL to pre-uploaded audio file
-- 16MB file size limit enforced during transcription, size flag to be set by frontend
-- Supported formats: webm, mp3, wav, ogg, m4a
-- Returns native Whisper API response with rich metadata
-- Frontend should handle audio capture, storage upload, and size validation
-
----
-
-## Image Generation Integration
-
-Use the preconfigured image generation helper that connects to the internal ImageService, no manual setup required.
-
-Example usage:
-```ts
-import { generateImage } from "./server/_core/imageGeneration.ts";
-
-const { url: imageUrl } = await generateImage({
-  prompt: "A serene landscape with mountains"
-});
-// For editing:
-const { url: imageUrl } = await generateImage({
-  prompt: "Add a rainbow to this landscape",
-  originalImages: [{
-    url: "https://example.com/original.jpg",
-    mimeType: "image/jpeg"
-  }]
-});
-```
-
-Tips
-- Always call from server-side code (e.g., inside tRPC procedures) to avoid exposing API keys
-- Image generation can take 5-20 seconds, implement proper loading states
-- Implement proper error handling as image generation can fail
+LLM responses often contain markdown. Render them with `<Streamdown>{content}</Streamdown>` from `streamdown`.
 
 ---
 
 ## ☁️ File Storage
 
-Use the preconfigured storage helpers in `server/storage.ts`. Credentials are injected from the platform (no manual setup required). Files are stored securely and served via the built-in `/manus-storage/` path — no manual URL management needed.
+Use the helpers in `server/storage.ts`, backed by Firebase Storage (`FIREBASE_STORAGE_BUCKET`).
 
 ```ts
 import { storagePut } from "./server/storage";
 
-// Upload bytes to storage
-const fileKey = `${userId}-files/${fileName}.png`
 const { key, url } = await storagePut(
-  fileKey,
+  `${userId}-files/${fileName}.png`,
   fileBuffer, // Buffer | Uint8Array | string
   "image/png"
 );
-// url = "/manus-storage/{key}" — use directly in frontend code
-// key = unique storage key — save in database
+// key = unique storage key (a random suffix is added); save it in Firestore
+// url = signed read URL, valid for up to 7 days
 ```
 
 Tips
-- Save the `key` or `url` in your database; use storage for the actual file bytes. This applies to all files including images, documents, and media.
-- For file uploads, have the client POST to your server, then call `storagePut` from your backend.
-- The returned `url` (e.g. `/manus-storage/...`) is automatically served via signed redirect — no manual URL signing needed.
-- To delete a file, drop its `key` from your DB and any UI references — the key is the only way to reach the object, so an unreferenced file is effectively gone. Do not implement a helper to remove the underlying object; the template's storage layer does not expose a delete endpoint.
-
----
-
-## 🗺️ Maps Integration
-
-**CRITICAL: The Manus proxy provides FULL access to ALL Google Maps features** - including advanced drawing, heatmaps, Street View, all layers, Places API, etc. Do ask users for Google Map API keys - authentication is automatic.
-
-**Default: Use Frontend SDK** - Import MapView from `client/src/components/Map.tsx` and initialize ANY Google Maps service (geocoding, directions, places, drawing, visualization, geometry, etc.) in the onMapReady callback. 
-
-**Use Backend API only when:**
-- Persisting data (save routes/locations to database)
-- Bulk operations (1000+ addresses)
-- Server-side needs (caching, scheduled jobs, hiding business logic)
-
-**Implementation:**
-- Frontend: See `client/src/components/Map.tsx` for component usage - ALL Google Maps JavaScript API features work
-- Backend: Create tRPC procedures using `makeRequest` from `server/_core/map.ts`
-
-NEVER use external map libraries or request API keys from users - the Manus proxy handles everything automatically with no feature limitations.
-
-
----
-
-## ☁️ Data API
-
-When you need external data, use the omni_search with search_type = 'api' to see there's any built-in api available in Manus API Hub access. You only have to connect other api if there's no suitable built-in api available.
+- Save the `key` in Firestore and treat it as the source of truth. Signed URLs expire, so get a fresh one with `storageGetSignedUrl(key)` (or `storageGet(key)`) when serving the file later.
+- For uploads, have the client POST to your server, then call `storagePut` from your backend.
+- Delete objects with `storageDelete(keys)` or `storageDeletePrefix(prefix)` when the owning record goes away.
+- Stream a file back through the API with `storageReadStream(key)` (see `/api/files/:fileId/download`).
 
 ---
 
 ## Owner Notifications
 
-This template already ships with a `notifyOwner({ title, content })` helper (`server/_core/notification.ts`) and a protected tRPC mutation at `trpc.system.notifyOwner`. Use it whenever backend logic needs to push an operational update to the Manus project owner—common triggers are new form submissions, survey feedback, or workflow results.
+`notifyOwner({ title, content })` in `server/_core/notification.ts` emails the site owner (`OWNER_EMAIL`, sent via Resend). Admins can also call it through the `trpc.system.notifyOwner` mutation.
 
-1. On the server, call `await notifyOwner({ title, content })` or reuse the provided `system.notifyOwner` mutation from jobs/webhooks (`trpc.system.notifyOwner.useMutation()` on the client).
-2. Handle the boolean return (`true` on success, `false` if the upstream service is temporarily unavailable) to decide whether you need a fallback channel.
-
-Keep this channel for owner-facing alerts; end-user messaging should flow through your app-specific systems.
+It returns `true` when the email was sent and `false` when `OWNER_EMAIL` or email sending isn't configured, so decide whether you need a fallback. Keep this channel for owner-facing alerts; end-user email goes through `server/_core/emailService.ts`.
 
 ---
 
@@ -527,475 +322,6 @@ Frontend display: In React components, always convert UTC timestamps to the user
 - Keep router files under ~150 lines—split into `server/routers/<feature>.ts` once they grow.
 - Show loading states at component level (spinners, skeletons) rather than blocking entire pages—keeps the app feeling responsive.
 
----
-
-## Core File References
-
-Note: All TODO comments are remarks for the agent (you), not for the user.
-
-`package.json`
-```ts
-{
-  "name": "omnicreator-ai",
-  "version": "1.0.0",
-  "type": "module",
-  "license": "MIT",
-  "scripts": {
-    "dev": "NODE_ENV=development tsx watch server/_core/index.ts",
-    "build": "vite build && esbuild server/_core/index.ts --platform=node --packages=external --bundle --format=esm --outdir=dist",
-    "start": "NODE_ENV=production node dist/index.js",
-    "check": "tsc --noEmit",
-    "format": "prettier --write .",
-    "test": "vitest run",
-    "db:push": "drizzle-kit generate && drizzle-kit migrate"
-  },
-  "dependencies": {
-    "@aws-sdk/client-s3": "^3.693.0",
-    "@aws-sdk/s3-request-presigner": "^3.693.0",
-    "@hookform/resolvers": "^5.2.2",
-    "@radix-ui/react-accordion": "^1.2.12",
-    "@radix-ui/react-alert-dialog": "^1.1.15",
-    "@radix-ui/react-aspect-ratio": "^1.1.7",
-    "@radix-ui/react-avatar": "^1.1.10",
-    "@radix-ui/react-checkbox": "^1.3.3",
-    "@radix-ui/react-collapsible": "^1.1.12",
-    "@radix-ui/react-context-menu": "^2.2.16",
-    "@radix-ui/react-dialog": "^1.1.15",
-    "@radix-ui/react-dropdown-menu": "^2.1.16",
-    "@radix-ui/react-hover-card": "^1.1.15",
-    "@radix-ui/react-label": "^2.1.7",
-    "@radix-ui/react-menubar": "^1.1.16",
-    "@radix-ui/react-navigation-menu": "^1.2.14",
-    "@radix-ui/react-popover": "^1.1.15",
-    "@radix-ui/react-progress": "^1.1.7",
-    "@radix-ui/react-radio-group": "^1.3.8",
-    "@radix-ui/react-scroll-area": "^1.2.10",
-    "@radix-ui/react-select": "^2.2.6",
-    "@radix-ui/react-separator": "^1.1.7",
-    "@radix-ui/react-slider": "^1.3.6",
-    "@radix-ui/react-slot": "^1.2.3",
-    "@radix-ui/react-switch": "^1.2.6",
-    "@radix-ui/react-tabs": "^1.1.13",
-    "@radix-ui/react-toggle": "^1.1.10",
-    "@radix-ui/react-toggle-group": "^1.1.11",
-    "@radix-ui/react-tooltip": "^1.2.8",
-    "@tanstack/react-query": "^5.90.2",
-    "@trpc/client": "^11.6.0",
-    "@trpc/react-query": "^11.6.0",
-    "@trpc/server": "^11.6.0",
-    "axios": "^1.12.0",
-    "class-variance-authority": "^0.7.1",
-    "clsx": "^2.1.1",
-    "cmdk": "^1.1.1",
-    "cookie": "^1.0.2",
-    "date-fns": "^4.1.0",
-    "dotenv": "^17.2.2",
-    "drizzle-orm": "^0.44.5",
-    "embla-carousel-react": "^8.6.0",
-    "express": "^4.21.2",
-    "framer-motion": "^12.23.22",
-    "input-otp": "^1.4.2",
-    "jose": "6.1.0",
-    "lucide-react": "^0.453.0",
-    "mysql2": "^3.15.0",
-    "nanoid": "^5.1.5",
-    "next-themes": "^0.4.6",
-    "react": "^19.2.1",
-    "react-day-picker": "^9.11.1",
-    "react-dom": "^19.2.1",
-    "react-hook-form": "^7.64.0",
-    "react-resizable-panels": "^3.0.6",
-    "recharts": "^2.15.2",
-    "sonner": "^2.0.7",
-    "streamdown": "^1.4.0",
-    "superjson": "^1.13.3",
-    "tailwind-merge": "^3.3.1",
-    "tailwindcss-animate": "^1.0.7",
-    "vaul": "^1.1.2",
-    "wouter": "^3.3.5",
-    "zod": "^4.1.12"
-  },
-  "devDependencies": {
-    "@builder.io/vite-plugin-jsx-loc": "^0.1.1",
-    "@tailwindcss/typography": "^0.5.15",
-    "@tailwindcss/vite": "^4.1.3",
-    "@types/express": "4.17.21",
-    "@types/google.maps": "^3.58.1",
-    "@types/node": "^24.7.0",
-    "@types/react": "^19.2.1",
-    "@types/react-dom": "^19.2.1",
-    "@vitejs/plugin-react": "^5.0.4",
-    "add": "^2.0.6",
-    "autoprefixer": "^10.4.20",
-    "drizzle-kit": "^0.31.4",
-    "esbuild": "^0.25.0",
-    "pnpm": "^10.15.1",
-    "postcss": "^8.4.47",
-    "prettier": "^3.6.2",
-    "tailwindcss": "^4.1.14",
-    "tsx": "^4.19.1",
-    "tw-animate-css": "^1.4.0",
-    "typescript": "5.9.3",
-    "vite": "^7.1.7",
-    "vite-plugin-manus-runtime": "^0.0.57",
-    "vitest": "^2.1.4"
-  },
-  "packageManager": "pnpm@10.4.1+sha512.c753b6c3ad7afa13af388fa6d808035a008e30ea9993f58c6663e2bc5ff21679aa834db094987129aa4d488b86df57f7b634981b2f827cdcacc698cc0cfb88af",
-  "pnpm": {
-    "patchedDependencies": {
-      "wouter@3.7.1": "patches/wouter@3.7.1.patch"
-    },
-    "overrides": {
-      "tailwindcss>nanoid": "3.3.7"
-    }
-  }
-}
-```
-
-`drizzle/schema.ts`
-```ts
-import { int, mysqlEnum, mysqlTable, text, timestamp, varchar } from "drizzle-orm/mysql-core";
-
-/**
- * Core user table backing auth flow.
- * Extend this file with additional tables as your product grows.
- * Columns use camelCase to match both database fields and generated types.
- */
-export const users = mysqlTable("users", {
-  /**
-   * Surrogate primary key. Auto-incremented numeric value managed by the database.
-   * Use this for relations between tables.
-   */
-  id: int("id").autoincrement().primaryKey(),
-  /** Manus OAuth identifier (openId) returned from the OAuth callback. Unique per user. */
-  openId: varchar("openId", { length: 64 }).notNull().unique(),
-  name: text("name"),
-  email: varchar("email", { length: 320 }),
-  loginMethod: varchar("loginMethod", { length: 64 }),
-  role: mysqlEnum("role", ["user", "admin"]).default("user").notNull(),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
-  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-  lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
-});
-
-export type User = typeof users.$inferSelect;
-export type InsertUser = typeof users.$inferInsert;
-
-// TODO: Add your tables here
-```
-
-`server/db.ts`
-```ts
-import { eq } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, users } from "../drizzle/schema";
-import { ENV } from './_core/env';
-
-let _db: ReturnType<typeof drizzle> | null = null;
-
-// Lazily create the drizzle instance so local tooling can run without a DB.
-export async function getDb() {
-  if (!_db && process.env.DATABASE_URL) {
-    try {
-      _db = drizzle(process.env.DATABASE_URL);
-    } catch (error) {
-      console.warn("[Database] Failed to connect:", error);
-      _db = null;
-    }
-  }
-  return _db;
-}
-
-export async function upsertUser(user: InsertUser): Promise<void> {
-  if (!user.openId) {
-    throw new Error("User openId is required for upsert");
-  }
-
-  const db = await getDb();
-  if (!db) {
-    console.warn("[Database] Cannot upsert user: database not available");
-    return;
-  }
-
-  try {
-    const values: InsertUser = {
-      openId: user.openId,
-    };
-    const updateSet: Record<string, unknown> = {};
-
-    const textFields = ["name", "email", "loginMethod"] as const;
-    type TextField = (typeof textFields)[number];
-
-    const assignNullable = (field: TextField) => {
-      const value = user[field];
-      if (value === undefined) return;
-      const normalized = value ?? null;
-      values[field] = normalized;
-      updateSet[field] = normalized;
-    };
-
-    textFields.forEach(assignNullable);
-
-    if (user.lastSignedIn !== undefined) {
-      values.lastSignedIn = user.lastSignedIn;
-      updateSet.lastSignedIn = user.lastSignedIn;
-    }
-    if (user.role !== undefined) {
-      values.role = user.role;
-      updateSet.role = user.role;
-    } else if (user.openId === ENV.ownerOpenId) {
-      values.role = 'admin';
-      updateSet.role = 'admin';
-    }
-
-    if (!values.lastSignedIn) {
-      values.lastSignedIn = new Date();
-    }
-
-    if (Object.keys(updateSet).length === 0) {
-      updateSet.lastSignedIn = new Date();
-    }
-
-    await db.insert(users).values(values).onDuplicateKeyUpdate({
-      set: updateSet,
-    });
-  } catch (error) {
-    console.error("[Database] Failed to upsert user:", error);
-    throw error;
-  }
-}
-
-export async function getUserByOpenId(openId: string) {
-  const db = await getDb();
-  if (!db) {
-    console.warn("[Database] Cannot get user: database not available");
-    return undefined;
-  }
-
-  const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
-
-  return result.length > 0 ? result[0] : undefined;
-}
-
-// TODO: add feature queries here as your schema grows.
-```
-
-`server/routers.ts`
-```ts
-import { COOKIE_NAME } from "@shared/const";
-import { getSessionCookieOptions } from "./_core/cookies";
-import { systemRouter } from "./_core/systemRouter";
-import { publicProcedure, router } from "./_core/trpc";
-
-export const appRouter = router({
-    // if you need to use socket.io, read and register route in server/_core/index.ts, all api should start with '/api/' so that the gateway can route correctly
-  system: systemRouter,
-  auth: router({
-    me: publicProcedure.query(opts => opts.ctx.user),
-    logout: publicProcedure.mutation(({ ctx }) => {
-      const cookieOptions = getSessionCookieOptions(ctx.req);
-      ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
-      return {
-        success: true,
-      } as const;
-    }),
-  }),
-
-  // TODO: add feature routers here, e.g.
-  // todo: router({
-  //   list: protectedProcedure.query(({ ctx }) =>
-  //     db.getUserTodos(ctx.user.id)
-  //   ),
-  // }),
-});
-
-export type AppRouter = typeof appRouter;
-```
-
-`client/index.html`
-```html
-<!doctype html>
-<html lang="en">
-
-  <head>
-    <meta charset="UTF-8" />
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1.0, maximum-scale=1" />
-    <title>IvorVerse AI</title>    
-    <!-- THIS IS THE START OF A COMMENT BLOCK, BLOCK TO BE DELETED: Google Fonts here, example:
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-    THIS IS THE END OF A COMMENT BLOCK, BLOCK TO BE DELETED -->
-  </head>
-
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-    <script
-      defer
-      src="%VITE_ANALYTICS_ENDPOINT%/umami"
-      data-website-id="%VITE_ANALYTICS_WEBSITE_ID%"></script>
-  </body>
-
-</html>
-```
-
-`client/src/App.tsx`
-```tsx
-import { Toaster } from "@/components/ui/sonner";
-import { TooltipProvider } from "@/components/ui/tooltip";
-import NotFound from "@/pages/NotFound";
-import { Route, Switch } from "wouter";
-import ErrorBoundary from "./components/ErrorBoundary";
-import { ThemeProvider } from "./contexts/ThemeContext";
-import Home from "./pages/Home";
-
-function Router() {
-  // make sure to consider if you need authentication for certain routes
-  return (
-    <Switch>
-      <Route path={"/"} component={Home} />
-      <Route path={"/404"} component={NotFound} />
-      {/* Final fallback route */}
-      <Route component={NotFound} />
-    </Switch>
-  );
-}
-
-// NOTE: About Theme
-// - First choose a default theme according to your design style (dark or light bg), than change color palette in index.css
-//   to keep consistent foreground/background color across components
-// - If you want to make theme switchable, pass `switchable` ThemeProvider and use `useTheme` hook
-
-function App() {
-  return (
-    <ErrorBoundary>
-      <ThemeProvider
-        defaultTheme="light"
-        // switchable
-      >
-        <TooltipProvider>
-          <Toaster />
-          <Router />
-        </TooltipProvider>
-      </ThemeProvider>
-    </ErrorBoundary>
-  );
-}
-
-export default App;
-```
-
-`client/src/lib/trpc.ts`
-```ts
-import { createTRPCReact } from "@trpc/react-query";
-import type { AppRouter } from "../../../server/routers";
-
-export const trpc = createTRPCReact<AppRouter>();
-```
-
-`client/src/pages/Home.tsx`
-```tsx
-import { useAuth } from "@/_core/hooks/useAuth";
-import { Button } from "@/components/ui/button";
-import { Loader2 } from "lucide-react";
-import { getLoginUrl } from "@/const";
-import { Streamdown } from 'streamdown';
-
-/**
- * All content in this page are only for example, replace with your own feature implementation
- * When building pages, remember your instructions in Frontend Workflow, Frontend Best Practices, Design Guide and Common Pitfalls
- */
-export default function Home() {
-  // The userAuth hooks provides authentication state
-  // To implement login/logout functionality, simply call logout() or redirect to getLoginUrl()
-  let { user, loading, error, isAuthenticated, logout } = useAuth();
-
-  // If theme is switchable in App.tsx, we can implement theme toggling like this:
-  // const { theme, toggleTheme } = useTheme();
-
-  return (
-    <div className="min-h-screen flex flex-col">
-      <main>
-        {/* Example: lucide-react for icons */}
-        <Loader2 className="animate-spin" />
-        Example Page
-        {/* Example: Streamdown for markdown rendering */}
-        <Streamdown>Any **markdown** content</Streamdown>
-        <Button variant="default">Example Button</Button>
-      </main>
-    </div>
-  );
-}
-```
-
-`server/auth.logout.test.ts`
-```ts
-import { describe, expect, it } from "vitest";
-import { appRouter } from "./routers";
-import { COOKIE_NAME } from "../shared/const";
-import type { TrpcContext } from "./_core/context";
-
-type CookieCall = {
-  name: string;
-  options: Record<string, unknown>;
-};
-
-type AuthenticatedUser = NonNullable<TrpcContext["user"]>;
-
-function createAuthContext(): { ctx: TrpcContext; clearedCookies: CookieCall[] } {
-  const clearedCookies: CookieCall[] = [];
-
-  const user: AuthenticatedUser = {
-    id: 1,
-    openId: "sample-user",
-    email: "sample@example.com",
-    name: "Sample User",
-    loginMethod: "manus",
-    role: "user",
-    createdAt: new Date(),
-    updatedAt: new Date(),
-    lastSignedIn: new Date(),
-  };
-
-  const ctx: TrpcContext = {
-    user,
-    req: {
-      protocol: "https",
-      headers: {},
-    } as TrpcContext["req"],
-    res: {
-      clearCookie: (name: string, options: Record<string, unknown>) => {
-        clearedCookies.push({ name, options });
-      },
-    } as TrpcContext["res"],
-  };
-
-  return { ctx, clearedCookies };
-}
-
-describe("auth.logout", () => {
-  it("clears the session cookie and reports success", async () => {
-    const { ctx, clearedCookies } = createAuthContext();
-    const caller = appRouter.createCaller(ctx);
-
-    const result = await caller.auth.logout();
-
-    expect(result).toEqual({ success: true });
-    expect(clearedCookies).toHaveLength(1);
-    expect(clearedCookies[0]?.name).toBe(COOKIE_NAME);
-    expect(clearedCookies[0]?.options).toMatchObject({
-      maxAge: -1,
-      secure: true,
-      sameSite: "none",
-      httpOnly: true,
-      path: "/",
-    });
-  });
-});
-```
 ---
 
 ## Common Pitfalls
@@ -1027,28 +353,10 @@ const { data } = trpc.items.getByIds.useQuery({ ids });
 
 **Why this happens:** TRPC queries trigger when input references change. Objects/arrays created in render have new references each time, causing infinite re-fetches.
 
-### Storing file bytes in database columns
-**Anti-pattern:** Adding BLOB/BYTEA columns to store file content
-```ts
-// ❌ Bad: Database bloat and slow queries
-export const files = sqliteTable('files', {
-  content: blob('content'), // Never store file bytes
-});
-```
+### Storing file bytes in Firestore
+**Anti-pattern:** Putting file content (bytes or base64) into a Firestore document. Documents are capped at 1 MiB and every read pulls the whole payload.
 
-**Correct approach:** Store S3 reference only, upload file bytes to S3
-```ts
-// ✅ Good: Store metadata + S3 reference
-export const files = sqliteTable('files', {
-  url: text('url').notNull(), // Url to reference the file in s3
-  fileKey: text('file_key').notNull(), // also save file_key for clarity
-  // optional, save other metadata if needed
-  // filename: text('filename'),
-  // mimeType: text('mime_type'),
-});
-```
-
-Use `storagePut()` to upload files (see S3 File Storage section).
+**Correct approach:** Upload the bytes with `storagePut()` and store only the `key` plus metadata (filename, MIME type, size) in the document. See File Storage.
 
 ### Navigation dead-ends in subpages
 **Problem:** Creating nested routes without escape routes—no header nav, no sidebar, no back button.

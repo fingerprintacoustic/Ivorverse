@@ -1,5 +1,7 @@
 # IvorVerse AI - Comprehensive Platform Audit Report
 
+> **Historical report.** Written in June 2026, before the app moved off Manus to Firebase. Mentions of Manus OAuth, Manus Forge APIs, Drizzle/MySQL and `*.manus.computer` URLs describe that older setup; login is now email/password, data is in Firestore, and the app deploys to Firebase.
+
 **Date:** June 5, 2026  
 **Platform:** IvorVerse AI (Rebranded from OmniCreator AI)  
 **Status:** CRITICAL BUGS FIXED - READY FOR LAUNCH

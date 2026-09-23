@@ -2,7 +2,7 @@
 
 ## Overview
 
-IvorVerse AI is a comprehensive AI-powered creative and productivity platform built with React, Express, tRPC, and PostgreSQL. It combines 10 powerful features into a unified dashboard. **One AI. Unlimited Creation.**
+IvorVerse AI is a comprehensive AI-powered creative and productivity platform built with React, Express, tRPC, and Firebase (Firestore, Storage, Hosting and Cloud Functions). It combines 10 powerful features into a unified dashboard. **One AI. Unlimited Creation.**
 
 ## Project Structure
 
@@ -18,22 +18,25 @@ ivorverse-ai/
 │   └── index.html
 ├── server/                # Express backend
 │   ├── routers.ts         # tRPC procedures
-│   ├── db.ts              # Database queries
-│   ├── storage.ts         # S3 storage helpers
+│   ├── db.ts              # Firestore data access
+│   ├── storage.ts         # Firebase Storage helpers
 │   └── _core/             # Core infrastructure
-├── drizzle/               # Database schema & migrations
+├── functions/             # Cloud Functions entry (API + job worker)
 ├── shared/                # Shared types and constants
+├── firebase.json          # Hosting, Functions, Firestore and emulator config
+├── firestore.rules        # Denies direct client access (all access goes through the API)
+├── firestore.indexes.json # Composite indexes
 └── package.json
 ```
 
 ## Features Implemented
 
 ### Core Infrastructure ✅
-- **Database**: PostgreSQL with 13 tables (users, projects, chat, music, video, images, characters, subscriptions, etc.)
+- **Database**: Firestore (users, projects, chat, music, video, characters, subscriptions, etc.)
 - **Authentication**: Email/password with email verification and password reset (no OAuth)
 - **API**: tRPC with 50+ procedures for all features
-- **Storage**: S3-compatible file storage
-- **LLM Integration**: OpenAI-compatible API for AI responses
+- **Storage**: Firebase Storage
+- **LLM Integration**: Claude (Anthropic API) for the chat assistant; OpenAI for general completions, images and transcription
 
 ### Frontend Pages ✅
 - **Landing Page** (`/`): Beautiful marketing site with pricing and features
@@ -51,21 +54,24 @@ ivorverse-ai/
 - **Subscriptions**: Tier management and tracking
 - **Admin**: User management, usage stats, audit logging
 
-## Database Schema
+## Data Model
 
-### Core Tables
+Data lives in Firestore collections, accessed only through `server/db.ts`. Documents keep numeric ids (a `_counters` collection hands them out), so the rest of the code works with `number` ids.
+
+### Main Collections
 - `users` - User accounts with subscription info
 - `projects` - All user projects (chat, research, music, video, etc.)
 - `chatMessages` - Chat conversation history
+- `projectMemory` - Per-project memory for the chat assistant
 - `characters` - Reusable character profiles
-- `files` - Uploaded and generated files
+- `files` - Uploaded and generated files (bytes live in Firebase Storage)
 - `subscriptions` - Subscription tier tracking
 - `usage` - Monthly usage tracking per feature
 - `researchReports` - Generated research reports
-- `musicProjects` - Music generation data
-- `videoProjects` - Video generation data
-- `appProjects` - App builder projects
-- `teamMembers` - Team collaboration (Business tier)
+- `musicProjects`, `videoProjects`, `appProjects` - Feature data
+- `agents`, `agentTasks`, `workflows`, `workflowRuns` - Agents and workflows
+- `products`, `sales` - Marketplace
+- `jobs` - Background jobs (picked up by the `jobWorker` Cloud Function)
 - `auditLogs` - Admin action logging
 
 ## Environment Variables
@@ -97,33 +103,31 @@ Login is email/password only, so the old Manus OAuth variables (`VITE_APP_ID`, `
 
 ### Install Dependencies
 ```bash
-pnpm install
+npm install
 ```
 
 ### Run Development Server
 ```bash
-pnpm run dev
+npm run dev
 ```
 
-The dev server will start at `http://localhost:3000`
+The dev server will start at `http://localhost:3000`. It needs Firestore credentials: run `gcloud auth application-default login`, set `FIREBASE_SERVICE_ACCOUNT_JSON`, or use the emulators.
 
-### Database Migrations
+### Firebase Emulators
 ```bash
-# Generate migration from schema changes
-pnpm drizzle-kit generate
-
-# Apply migrations
-pnpm drizzle-kit migrate
+npm run emulators
 ```
+
+Firestore has no migrations. Collections are created on first write; add composite indexes to `firestore.indexes.json`.
 
 ### Build for Production
 ```bash
-pnpm run build
+npm run build
 ```
 
 ### Run Tests
 ```bash
-pnpm test
+npm test
 ```
 
 ## Subscription Tiers
@@ -179,49 +183,22 @@ npm run deploy
 ```
 Builds the client and the Cloud Function, then runs `firebase deploy` (Hosting + Functions, see `firebase.json`).
 
-### Via Docker (Self-hosted)
+### As a Node server (self-hosted)
 ```bash
-# Build Docker image
-docker build -t ivorverse-ai .
-
-# Run container
-docker run -p 3000:3000 \
-  -e DATABASE_URL="postgresql://..." \
-  -e JWT_SECRET="..." \
-  ivorverse-ai
+npm run build
+npm start
 ```
-
-## Key Features to Implement Next
-
-### Phase 3-4: Feature Pages
-- [ ] Research feature page with web search UI
-- [ ] App Builder with code generation preview
-- [ ] Music Studio with lyrics/structure editor
-- [ ] Image Studio with generation gallery
-- [ ] Voice Studio with transcription interface
-- [ ] Music Video Generator workflow
-- [ ] Character Memory gallery
-
-### Phase 5: Admin Dashboard
-- [ ] User management interface
-- [ ] Usage analytics and charts
-- [ ] Revenue tracking
-- [ ] Subscription management
-
-### Phase 6: Payments
-- [ ] Stripe integration for subscriptions
-- [ ] Billing portal
-- [ ] Invoice generation
+Serves the API and the built client from one process on `PORT` (default 3000). It still uses Firestore and Firebase Storage, so set `FIREBASE_SERVICE_ACCOUNT_JSON` and the other variables from `.env.example`. Without the `jobWorker` Cloud Function, background jobs run in the same process.
 
 ## Testing
 
 ### Unit Tests
 ```bash
 # Run all tests
-pnpm test
+npm test
 
 # Watch mode
-pnpm test --watch
+npx vitest
 ```
 
 ### Example Test (server/auth.logout.test.ts)
@@ -241,7 +218,7 @@ describe("auth.logout", () => {
 - **Code Splitting**: Feature pages lazy-loaded
 - **Database Indexing**: Indexes on userId, projectId, createdAt
 - **Caching**: User subscription data cached in session
-- **Image Optimization**: Generated images stored in S3
+- **Image Optimization**: Generated images stored in Firebase Storage
 - **API Streaming**: Long-running operations use streaming responses
 
 ## Security
@@ -249,7 +226,7 @@ describe("auth.logout", () => {
 - **Authentication**: Email/password with a signed JWT session cookie (`server/_core/session.ts`)
 - **Authorization**: Role-based access control (user/admin)
 - **Rate Limiting**: Per-user rate limits based on subscription tier
-- **SQL Injection**: Drizzle ORM prevents SQL injection
+- **Database Access**: Firestore rules deny all client access; only the server (Admin SDK) reads and writes
 - **XSS Protection**: React's built-in escaping
 - **CORS**: Configured for frontend domain only
 
@@ -260,7 +237,7 @@ Server logs go to stdout (the terminal locally, Cloud Logging for the deployed f
 ## Support & Documentation
 
 - **Architecture**: See `ARCHITECTURE.md`
-- **Database Schema**: See `drizzle/schema.ts`
+- **Data Model**: See `server/db.ts`
 - **API Procedures**: See `server/routers.ts`
 - **Frontend Components**: See `client/src/components/`
 
@@ -269,19 +246,13 @@ Server logs go to stdout (the terminal locally, Cloud Logging for the deployed f
 ### Dev Server Not Starting
 ```bash
 # Clear cache and restart
-rm -rf .next node_modules/.vite
-pnpm install
-pnpm run dev
+rm -rf node_modules/.vite
+npm install
+npm run dev
 ```
 
-### Database Connection Issues
-```bash
-# Check DATABASE_URL is set
-echo $DATABASE_URL
-
-# Test connection
-psql $DATABASE_URL -c "SELECT 1"
-```
+### Firestore Connection Issues
+"Unable to detect a Project Id" means no Firebase credentials were found. Run `gcloud auth application-default login`, set `FIREBASE_SERVICE_ACCOUNT_JSON` in `.env`, or run against the emulators (`npm run emulators`).
 
 ### Build Errors
 ```bash
@@ -289,18 +260,8 @@ psql $DATABASE_URL -c "SELECT 1"
 rm -rf dist .vite
 
 # Rebuild
-pnpm run build
+npm run build
 ```
-
-## Next Steps
-
-1. **Stripe Integration**: Set up payment processing for subscriptions
-2. **Feature Pages**: Build UI for all 10 features
-3. **Admin Dashboard**: Create admin panel for user management
-4. **Testing**: Write comprehensive vitest tests
-5. **Performance**: Optimize database queries and add caching
-6. **Monitoring**: Set up error tracking and analytics
-7. **Documentation**: Create user guides and API documentation
 
 ## License
 

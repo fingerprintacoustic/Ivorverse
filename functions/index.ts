@@ -14,7 +14,7 @@ const SECRETS = [
   "JWT_SECRET",
 ];
 
-// 2nd-gen Cloud Function serving the whole tRPC API + OAuth + storage proxy
+// 2nd-gen Cloud Function serving the whole tRPC API + Stripe webhook + file download
 // routes. Firebase Hosting rewrites /api/** (see firebase.json) to this
 // function; the Express app itself still mounts routes under /api/trpc etc.,
 // so no path-stripping is needed here.
