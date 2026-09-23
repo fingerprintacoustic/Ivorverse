@@ -13,7 +13,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { generateImage } from "./imageGeneration";
 import { enqueueJob } from "./jobs";
 import { consumeQuota, QuotaExceededError, refundQuota, type QuotaUser } from "./quota";
-import { setMemory } from "../db";
+import { createFile, setMemory } from "../db";
 
 let _client: Anthropic | null = null;
 function getClient(): Anthropic {
@@ -181,8 +181,10 @@ async function executeToolUnchecked(
       }
       const period = await consumeQuota(user, "imageGenerations");
       try {
-        const { url } = await generateImage({ prompt: input.prompt, userId: user.id });
+        const { url, key } = await generateImage({ prompt: input.prompt, userId: user.id });
         if (!url) throw new Error("Image generation failed to return a URL.");
+        // Recorded so it shows in the Image Studio gallery and is downloadable
+        if (key) await createFile(user.id, `chat-image-${Date.now()}.png`, key, url, "image/png", undefined, projectId);
         return JSON.stringify({ imageUrl: url });
       } catch (error) {
         await refundQuota(user.id, "imageGenerations", 1, period);

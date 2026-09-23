@@ -240,6 +240,23 @@ export async function handleStripeWebhook(event: Stripe.Event) {
       break;
     }
 
+    case "refund.created":
+    case "refund.updated": {
+      const { recordProductRefund } = await import("./_core/marketplace");
+      await recordProductRefund(event.data.object as Stripe.Refund);
+      break;
+    }
+
+    case "charge.dispute.funds_withdrawn":
+    case "charge.dispute.funds_reinstated": {
+      const { recordProductDispute } = await import("./_core/marketplace");
+      await recordProductDispute(
+        event.data.object as Stripe.Dispute,
+        event.type === "charge.dispute.funds_withdrawn" ? "withdrawn" : "reinstated"
+      );
+      break;
+    }
+
     case "customer.subscription.created":
     case "customer.subscription.updated":
     case "customer.subscription.deleted":

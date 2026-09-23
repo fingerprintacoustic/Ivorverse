@@ -127,6 +127,7 @@ export async function runWorkflowStepJob(input: { runId: number; stepIndex: numb
 
     const output = await runAgent({
       agent,
+      userId: ctx.userId,
       prompt: buildStepPrompt(workflow.name, run.input, steps, input.stepIndex, stepDef.instructions),
       onProgress: (progress, stage) => ctx.report(progress, stage),
     });

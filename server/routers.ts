@@ -102,9 +102,9 @@ async function generateProjectImage(
   const { url, key } = await generateImage({ prompt: fullPrompt, userId, originalImages });
   if (!url || !key) throw new Error("Image generation returned no image");
 
-  await db.createFile(userId, `${kind}-${Date.now()}.png`, key, url, "image/png", undefined, projectId);
+  const file = await db.createFile(userId, `${kind}-${Date.now()}.png`, key, url, "image/png", undefined, projectId);
   await db.trackUsage(userId, "image");
-  return { url };
+  return { url, fileId: file.id };
 }
 
 /** Every agent a workflow's steps reference must belong to the caller. */
@@ -832,6 +832,16 @@ You have a web_search tool available — use it whenever the user asks about cur
 
   // Image Studio
   image: router({
+    // Saved images for the gallery (Image Studio, chat, video scenes), newest first
+    list: protectedProcedure.query(async ({ ctx }) => {
+      const files = await db.getUserFiles(ctx.user.id);
+      return files
+        .filter((f) => f.mimeType?.startsWith("image/"))
+        .reverse()
+        .slice(0, 60)
+        .map((f) => ({ fileId: f.id, url: f.url, name: f.filename, createdAt: f.createdAt }));
+    }),
+
     generate: quotaProcedure("imageGenerations")
       .input(z.object({ projectId: z.number(), prompt: z.string().trim().min(1).max(4000), characterId: z.number().optional() }))
       .mutation(async ({ ctx, input }) => {
@@ -1477,7 +1487,7 @@ You have a web_search tool available — use it whenever the user asks about cur
         const productSales = sales.filter((s) => s.productId === p.id);
         return {
           ...p,
-          salesCount: productSales.length,
+          salesCount: productSales.filter((s) => ["payment", "subscription", "renewal"].includes(s.mode)).length,
           revenue: productSales.reduce((sum, s) => sum + s.amount, 0),
         };
       });

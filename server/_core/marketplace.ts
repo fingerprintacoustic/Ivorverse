@@ -198,3 +198,76 @@ export async function recordProductRenewal(invoice: Stripe.Invoice) {
     stripeInvoiceId: invoice.id,
   });
 }
+
+/**
+ * Which product a payment was for. One-time purchases carry the product on
+ * the PaymentIntent's metadata; subscription charges are traced through the
+ * invoice they paid (its subscription metadata snapshot).
+ */
+async function productForPayment(paymentIntentId: string) {
+  const stripe = getStripe();
+  const intent = await stripe.paymentIntents.retrieve(paymentIntentId);
+  let metadata: Record<string, string> | null | undefined = intent.metadata;
+  if (!metadata?.product_id) {
+    const payments = await stripe.invoicePayments.list({
+      payment: { type: "payment_intent", payment_intent: paymentIntentId },
+      expand: ["data.invoice"],
+      limit: 1,
+    });
+    const invoice = payments.data[0]?.invoice;
+    metadata =
+      typeof invoice === "object" && invoice && !("deleted" in invoice && invoice.deleted)
+        ? (invoice as Stripe.Invoice).parent?.subscription_details?.metadata
+        : null;
+  }
+  const productId = Number(metadata?.product_id);
+  const sellerId = Number(metadata?.seller_id);
+  return productId && sellerId ? { productId, sellerId } : null;
+}
+
+const idOf = (value: string | { id: string } | null | undefined) =>
+  typeof value === "string" ? value : value?.id ?? null;
+
+/**
+ * From refund.created / refund.updated: a refund of a product sale is a
+ * negative entry in the seller's sales, so revenue reflects it. A refund
+ * that fails or is canceled is removed again.
+ */
+export async function recordProductRefund(refund: Stripe.Refund) {
+  if (refund.status === "failed" || refund.status === "canceled") {
+    await db.deleteSale(refund.id);
+    return;
+  }
+  const paymentIntentId = idOf(refund.payment_intent);
+  if (!paymentIntentId) return;
+  const product = await productForPayment(paymentIntentId);
+  if (!product) return; // not a marketplace sale (e.g. an IvorVerse plan)
+
+  await db.recordSaleOnce({
+    ...product,
+    amount: -(refund.amount ?? 0) / 100,
+    buyerEmail: null,
+    mode: "refund",
+    stripeObjectId: refund.id,
+  });
+}
+
+/**
+ * From charge.dispute.funds_withdrawn / funds_reinstated: disputed money
+ * leaving (negative) or coming back (positive) is reflected in revenue.
+ */
+export async function recordProductDispute(dispute: Stripe.Dispute, change: "withdrawn" | "reinstated") {
+  const paymentIntentId = idOf(dispute.payment_intent);
+  if (!paymentIntentId) return;
+  const product = await productForPayment(paymentIntentId);
+  if (!product) return;
+
+  const amount = (dispute.amount ?? 0) / 100;
+  await db.recordSaleOnce({
+    ...product,
+    amount: change === "withdrawn" ? -amount : amount,
+    buyerEmail: null,
+    mode: change === "withdrawn" ? "dispute" : "dispute_reversal",
+    stripeObjectId: `${dispute.id}_${change}`,
+  });
+}

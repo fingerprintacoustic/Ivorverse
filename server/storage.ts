@@ -98,3 +98,8 @@ export async function storageDelete(keys: string[]): Promise<void> {
 export async function storageDeletePrefix(prefix: string): Promise<void> {
   await getBucket().deleteFiles({ prefix: normalizeKey(prefix), force: true });
 }
+
+/** Read a stored object as a stream (for serving downloads through our own origin). */
+export function storageReadStream(key: string) {
+  return getBucket().file(normalizeKey(key)).createReadStream();
+}

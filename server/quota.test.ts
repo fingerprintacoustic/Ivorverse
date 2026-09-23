@@ -22,7 +22,7 @@ vi.mock("./db", async (importOriginal) => ({
   getDb: vi.fn(async () => fakeFirestore),
   getUserCharacters: vi.fn(async () => Array.from({ length: characterCount }, (_, i) => ({ id: i }))),
   getProjectById: vi.fn(async (id: number, userId: number) => ({ id, userId, type: "image" })),
-  createFile: vi.fn(),
+  createFile: vi.fn(async () => ({ id: 1 })),
   trackUsage: vi.fn(),
 }));
 const generateImage = vi.fn();

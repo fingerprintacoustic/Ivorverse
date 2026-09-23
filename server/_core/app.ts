@@ -3,6 +3,41 @@ import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { getStripe, handleStripeWebhook } from "../stripe";
+import * as db from "../db";
+import { authenticateRequest } from "./session";
+import { storageReadStream } from "../storage";
+
+/**
+ * Download one of the caller's files as an attachment. Files live on signed
+ * Cloud Storage URLs on another origin, where the browser ignores
+ * `download` (it just opens the image) and can't read the bytes to convert
+ * them; serving through our own origin fixes both.
+ */
+async function downloadFile(req: express.Request, res: express.Response) {
+  let user;
+  try {
+    user = await authenticateRequest(req);
+  } catch {
+    res.status(401).send("Not signed in");
+    return;
+  }
+  const file = await db.getUserFileById(Number(req.params.fileId), user.id);
+  if (!file) {
+    res.status(404).send("File not found");
+    return;
+  }
+  const safeName = file.filename.replace(/[^\w.-]+/g, "_") || "download";
+  res.setHeader("Content-Type", file.mimeType || "application/octet-stream");
+  res.setHeader("Content-Disposition", `attachment; filename="${safeName}"`);
+  res.setHeader("Cache-Control", "private, no-store");
+  storageReadStream(file.fileKey)
+    .on("error", (error) => {
+      console.error(`[Files] Download of file ${file.id} failed:`, error);
+      if (!res.headersSent) res.status(404).send("File not found");
+      else res.end();
+    })
+    .pipe(res);
+}
 
 /**
  * Stripe webhook. Must be registered before express.json(): the signature
@@ -53,6 +88,7 @@ export function createApp(): Express {
   const app = express();
   app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), stripeWebhook);
   app.use(express.json({ limit: "50mb" }));
+  app.get("/api/files/:fileId/download", downloadFile);
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
   app.use(
     "/api/trpc",

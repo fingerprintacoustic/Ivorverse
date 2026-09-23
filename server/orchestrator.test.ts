@@ -11,7 +11,7 @@ let nextJobId = 100;
 const enqueueJob = vi.fn(async () => ({ id: nextJobId++ }));
 vi.mock("./_core/jobs", () => ({ enqueueJob }));
 vi.mock("./_core/imageGeneration", () => ({ generateImage: vi.fn() }));
-vi.mock("./db", () => ({ setMemory: vi.fn() }));
+vi.mock("./db", () => ({ setMemory: vi.fn(), createFile: vi.fn() }));
 const consumeQuota = vi.fn(async () => "2026-09");
 vi.mock("./_core/quota", async (orig) => ({
   ...(await orig<any>()),

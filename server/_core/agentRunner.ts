@@ -81,11 +81,15 @@ function describeStep(block: Anthropic.Beta.BetaContentBlock): string | null {
   return null;
 }
 
-async function executeClientTool(block: Anthropic.Beta.BetaToolUseBlock): Promise<Anthropic.Beta.BetaToolResultBlockParam> {
+async function executeClientTool(
+  block: Anthropic.Beta.BetaToolUseBlock,
+  userId: number | undefined
+): Promise<Anthropic.Beta.BetaToolResultBlockParam> {
   try {
     if (block.name === "generate_image") {
       const { prompt } = block.input as { prompt: string };
-      const { url } = await generateImage({ prompt });
+      // Stored under the user's folder so account deletion removes it
+      const { url } = await generateImage({ prompt, userId });
       if (!url) throw new Error("Image generation returned no URL");
       return { type: "tool_result", tool_use_id: block.id, content: JSON.stringify({ imageUrl: url }) };
     }
@@ -130,9 +134,11 @@ function extractReport(content: Anthropic.Beta.BetaContentBlock[]): string {
 export async function runAgent(options: {
   agent: { name: string; description: string | null; capabilities?: unknown } | undefined;
   prompt: string;
+  /** Owner of anything the run creates (e.g. generated images) */
+  userId?: number;
   onProgress: (progress: number, stage: string) => Promise<void>;
 }): Promise<string> {
-  const { agent, prompt, onProgress } = options;
+  const { agent, prompt, onProgress, userId } = options;
   const tools = agentTools(agent?.capabilities);
   const messages: Anthropic.Beta.BetaMessageParam[] = [{ role: "user", content: prompt }];
   const started = Date.now();
@@ -176,7 +182,9 @@ export async function runAgent(options: {
     const toolUses = response.content.filter(
       (b): b is Anthropic.Beta.BetaToolUseBlock => b.type === "tool_use"
     );
-    const results: Anthropic.Beta.BetaContentBlockParam[] = await Promise.all(toolUses.map(executeClientTool));
+    const results: Anthropic.Beta.BetaContentBlockParam[] = await Promise.all(
+      toolUses.map((block) => executeClientTool(block, userId))
+    );
 
     // Out of time or rounds: ask for the report now, with tools disabled
     if (Date.now() - started > TIME_BUDGET_MS || round >= MAX_ROUNDS - 2) {
@@ -203,6 +211,7 @@ export async function runAgentTaskJob(input: { taskId: number }, ctx: JobContext
   try {
     const result = await runAgent({
       agent,
+      userId: ctx.userId,
       prompt: `Task: ${task.title}${task.description ? `
 
 Details:

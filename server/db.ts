@@ -308,14 +308,19 @@ export interface Sale {
   id: number;
   productId: number;
   sellerId: number;
-  /** USD, as charged */
+  /** USD. Negative for refunds and disputed funds withdrawn. */
   amount: number;
   buyerEmail: string | null;
-  /** payment: one-time; subscription: first month (via Checkout); renewal: a later month */
-  mode: "payment" | "subscription" | "renewal";
-  /** Checkout session for purchases; invoice id for renewals. Also the doc id. */
+  /**
+   * payment: one-time; subscription: first month (via Checkout); renewal: a
+   * later month; refund / dispute: money returned or withdrawn (negative);
+   * dispute_reversal: disputed funds reinstated (positive)
+   */
+  mode: "payment" | "subscription" | "renewal" | "refund" | "dispute" | "dispute_reversal";
+  /** Checkout session for purchases; invoice id for renewals; refund/dispute id otherwise. Also the doc id. */
   stripeSessionId?: string;
   stripeInvoiceId?: string;
+  stripeObjectId?: string;
   createdAt: Date;
 }
 
@@ -708,6 +713,14 @@ export async function createFile(
     },
     { createdAt: true }
   );
+}
+
+/** A file record, only if it belongs to `userId`. */
+export async function getUserFileById(fileId: number, userId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const file = await getById<FileRecord>(db, "files", fileId);
+  return file && file.userId === userId ? file : undefined;
 }
 
 export async function getUserFiles(userId: number) {
@@ -1460,7 +1473,7 @@ export async function setUserConnectAccount(
 export async function recordSaleOnce(data: Omit<Sale, "id" | "createdAt">): Promise<boolean> {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  const key = data.stripeInvoiceId ?? data.stripeSessionId;
+  const key = data.stripeInvoiceId ?? data.stripeSessionId ?? data.stripeObjectId;
   if (!key) throw new Error("A sale needs a Stripe session or invoice id");
   const ref = db.collection("sales").doc(key);
   try {
@@ -1470,6 +1483,13 @@ export async function recordSaleOnce(data: Omit<Sale, "id" | "createdAt">): Prom
     if (error?.code === 6 /* ALREADY_EXISTS */) return false;
     throw error;
   }
+}
+
+/** Remove a sale entry by its Stripe id (e.g. a refund that failed). */
+export async function deleteSale(key: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.collection("sales").doc(key).delete();
 }
 
 /** Newest first; sorted in memory so no composite index is needed. */

@@ -53,7 +53,15 @@ const emptyDraft = (): Draft => ({
   published: false,
 });
 
-const money = (n: number) => `$${n.toFixed(2)}`;
+const money = (n: number) => (n < 0 ? `-$${Math.abs(n).toFixed(2)}` : `$${n.toFixed(2)}`);
+
+const SALE_LABELS: Record<string, string> = {
+  subscription: " (first month)",
+  renewal: " (renewal)",
+  refund: " (refund)",
+  dispute: " (dispute)",
+  dispute_reversal: " (dispute won)",
+};
 
 function SellerStatusCard() {
   const utils = trpc.useUtils();
@@ -293,9 +301,9 @@ export default function MonetizeFeature() {
                   <li key={i} className="flex flex-wrap items-center justify-between gap-2 py-2 text-sm">
                     <span className="font-medium">{sale.productName}</span>
                     <span className="text-muted-foreground">{sale.buyerEmail ?? "Unknown buyer"}</span>
-                    <span className="tabular-nums">
+                    <span className={`tabular-nums ${sale.amount < 0 ? "text-destructive" : ""}`}>
                       {money(sale.amount)}
-                      {sale.mode === "subscription" ? " (first month)" : sale.mode === "renewal" ? " (renewal)" : ""}
+                      {SALE_LABELS[sale.mode] ?? ""}
                     </span>
                     <span className="text-muted-foreground">{new Date(sale.createdAt).toLocaleDateString()}</span>
                   </li>

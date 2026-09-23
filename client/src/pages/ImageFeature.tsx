@@ -1,31 +1,274 @@
-import { useAuth } from "@/_core/hooks/useAuth";
 import DashboardLayout from "@/components/DashboardLayout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Link } from "wouter";
 import { trpc } from "@/lib/trpc";
-import { Plus, Sparkles, Loader2, Download, Copy, Share2 } from "lucide-react";
-import { useState, useMemo } from "react";
+import { Copy, Download, Loader2, Plus, Share2, Sparkles } from "lucide-react";
+import { useState } from "react";
+import { Link } from "wouter";
 import { toast } from "sonner";
 
-// Memory optimization: keep only last 20 images in memory
-const MAX_IMAGES_IN_MEMORY = 20;
+type GeneratedImage = { url: string; fileId: number };
+type Kind = "image" | "thumbnail" | "graphic" | "logo";
+
+// Downloads go through our own origin (/api/files/:id/download): browsers
+// ignore `download` on the cross-origin storage URL and can't read its bytes.
+const downloadUrl = (fileId: number) => `/api/files/${fileId}/download`;
+
+function saveBlob(blob: Blob, filename: string) {
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = objectUrl;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(objectUrl);
+}
+
+async function downloadImage(image: GeneratedImage, format: "png" | "jpg") {
+  try {
+    const response = await fetch(downloadUrl(image.fileId));
+    if (!response.ok) throw new Error(`Download failed (${response.status})`);
+    const png = await response.blob();
+    if (format === "png") {
+      saveBlob(png, `image-${image.fileId}.png`);
+      return;
+    }
+    // Real JPEG conversion; JPEG has no transparency, so flatten onto white
+    const bitmap = await createImageBitmap(png);
+    const canvas = document.createElement("canvas");
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    const context = canvas.getContext("2d")!;
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(bitmap, 0, 0);
+    const jpg = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.92));
+    if (!jpg) throw new Error("JPEG conversion failed");
+    saveBlob(jpg, `image-${image.fileId}.jpg`);
+  } catch (error) {
+    toast.error(error instanceof Error ? error.message : "Download failed");
+  }
+}
+
+function copyUrl(url: string) {
+  navigator.clipboard
+    .writeText(url)
+    .then(() => toast.success("Image URL copied to clipboard"))
+    .catch(() => toast.error("Couldn't access the clipboard"));
+}
+
+function shareImage(url: string) {
+  if (navigator.share) {
+    navigator
+      .share({ title: "Generated Image", text: "Made with IvorVerse AI", url })
+      .catch(() => {}); // user dismissed the share sheet
+  } else {
+    copyUrl(url);
+  }
+}
+
+function ImageResult({ image, logo }: { image: GeneratedImage; logo?: boolean }) {
+  return (
+    <div className="mt-6 space-y-4">
+      <img src={image.url} alt="Generated" className={`w-full rounded-lg border ${logo ? "bg-white p-4" : ""}`} />
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <Button onClick={() => downloadImage(image, "png")} variant="outline">
+          <Download className="w-4 h-4 mr-2" />
+          PNG
+        </Button>
+        <Button onClick={() => downloadImage(image, "jpg")} variant="outline">
+          <Download className="w-4 h-4 mr-2" />
+          JPG
+        </Button>
+        <Button onClick={() => copyUrl(image.url)} variant="outline">
+          <Copy className="w-4 h-4 mr-2" />
+          Copy URL
+        </Button>
+        <Button onClick={() => shareImage(image.url)} variant="outline">
+          <Share2 className="w-4 h-4 mr-2" />
+          Share
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function CharacterPicker({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const { data: characters } = trpc.characters.list.useQuery();
+  return (
+    <div className="space-y-1.5">
+      <Label>Character (optional)</Label>
+      <Select value={value} onValueChange={onChange}>
+        <SelectTrigger>
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="none">No character</SelectItem>
+          {(characters ?? []).map((c) => (
+            <SelectItem key={c.id} value={String(c.id)} disabled={!c.faceImageUrl}>
+              {c.name}
+              {!c.faceImageUrl ? " (add a face first)" : ""}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <p className="text-xs text-muted-foreground">
+        {characters && characters.length > 0 ? (
+          "Uses the character's face so the same person appears in your image."
+        ) : (
+          <>
+            Create characters with a face image in{" "}
+            <Link href="/feature/character" className="underline">
+              Characters
+            </Link>{" "}
+            to feature them here.
+          </>
+        )}
+      </p>
+    </div>
+  );
+}
+
+const PANELS: Record<Kind, { title: string; description: string; placeholder: string; button: string; multiline: boolean; character: boolean }> = {
+  image: {
+    title: "Generate Image",
+    description: "Describe the image you want to create",
+    placeholder: "Describe your image in detail...",
+    button: "Generate Image",
+    multiline: true,
+    character: true,
+  },
+  thumbnail: {
+    title: "Generate Thumbnail",
+    description: "A YouTube-style thumbnail for a video title",
+    placeholder: "Video title, e.g. I tried every coffee in Tokyo",
+    button: "Generate Thumbnail",
+    multiline: false,
+    character: true,
+  },
+  graphic: {
+    title: "Generate Social Graphic",
+    description: "A social media graphic for a post or announcement",
+    placeholder: "What the graphic is for, e.g. Launch day announcement for our app",
+    button: "Generate Graphic",
+    multiline: true,
+    character: true,
+  },
+  logo: {
+    title: "Generate Logo",
+    description: "A professional logo for your company",
+    placeholder: "Company name",
+    button: "Generate Logo",
+    multiline: false,
+    character: false,
+  },
+};
+
+function CreatePanel({ kind, projectId }: { kind: Kind; projectId: number }) {
+  const panel = PANELS[kind];
+  const utils = trpc.useUtils();
+  const [text, setText] = useState("");
+  const [characterId, setCharacterId] = useState("none");
+  const [result, setResult] = useState<GeneratedImage | null>(null);
+
+  const onSuccess = (data: { url: string; fileId: number }) => {
+    setResult(data);
+    utils.image.list.invalidate();
+    toast.success("Image generated");
+  };
+  const onError = (error: { message: string }) => toast.error(`Failed to generate: ${error.message}`);
+  const generate = trpc.image.generate.useMutation({ onSuccess, onError });
+  const thumbnail = trpc.image.generateThumbnail.useMutation({ onSuccess, onError });
+  const graphic = trpc.image.generateGraphic.useMutation({ onSuccess, onError });
+  const logo = trpc.image.generateLogo.useMutation({ onSuccess, onError });
+  const pending = generate.isPending || thumbnail.isPending || graphic.isPending || logo.isPending;
+
+  const handleGenerate = () => {
+    const value = text.trim();
+    if (!value) return;
+    const character = characterId === "none" ? undefined : Number(characterId);
+    if (kind === "image") generate.mutate({ projectId, prompt: value, characterId: character });
+    else if (kind === "thumbnail") thumbnail.mutate({ projectId, title: value, characterId: character });
+    else if (kind === "graphic") graphic.mutate({ projectId, description: value, characterId: character });
+    else logo.mutate({ projectId, companyName: value });
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{panel.title}</CardTitle>
+        <CardDescription>{panel.description}</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {panel.multiline ? (
+          <Textarea placeholder={panel.placeholder} value={text} onChange={(e) => setText(e.target.value)} rows={4} />
+        ) : (
+          <Input
+            placeholder={panel.placeholder}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleGenerate()}
+          />
+        )}
+        {panel.character && <CharacterPicker value={characterId} onChange={setCharacterId} />}
+        <Button onClick={handleGenerate} disabled={!text.trim() || pending} className="w-full">
+          {pending ? (
+            <>
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              Generating...
+            </>
+          ) : (
+            <>
+              <Sparkles className="w-4 h-4 mr-2" />
+              {panel.button}
+            </>
+          )}
+        </Button>
+        {result && <ImageResult image={result} logo={kind === "logo"} />}
+      </CardContent>
+    </Card>
+  );
+}
+
+function Gallery() {
+  const { data: images, isLoading } = trpc.image.list.useQuery();
+  if (isLoading) return <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />;
+  if (!images || images.length === 0) {
+    return <div className="text-center py-8 text-muted-foreground">No images generated yet. Start creating!</div>;
+  }
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+      {images.map((image) => (
+        <div key={image.fileId} className="space-y-2">
+          <img src={image.url} alt={image.name} className="w-full rounded-lg border" loading="lazy" />
+          <p className="text-xs text-muted-foreground">{new Date(image.createdAt).toLocaleString()}</p>
+          <div className="flex gap-2">
+            <Button size="sm" variant="outline" className="flex-1" onClick={() => downloadImage(image, "png")}>
+              <Download className="w-3 h-3 mr-1" />
+              PNG
+            </Button>
+            <Button size="sm" variant="outline" className="flex-1" onClick={() => downloadImage(image, "jpg")}>
+              <Download className="w-3 h-3 mr-1" />
+              JPG
+            </Button>
+            <Button size="sm" variant="outline" aria-label="Copy URL" onClick={() => copyUrl(image.url)}>
+              <Copy className="w-3 h-3" />
+            </Button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export default function ImageFeature() {
   const [projectName, setProjectName] = useState("");
   const [isOpen, setIsOpen] = useState(false);
-  const [prompt, setPrompt] = useState("");
-  const [companyName, setCompanyName] = useState("");
-  const [characterId, setCharacterId] = useState<string>("none");
-  const { data: characters } = trpc.characters.list.useQuery();
-  const [generatedImage, setGeneratedImage] = useState<{ url: string; format: "png" | "jpg" } | null>(null);
-  const [generatedImages, setGeneratedImages] = useState<Array<{ id: string; url: string; prompt: string; createdAt: Date }>>([]);
 
   const { data: projects, refetch } = trpc.projects.list.useQuery();
   const createProjectMutation = trpc.projects.create.useMutation({
@@ -35,153 +278,15 @@ export default function ImageFeature() {
       refetch();
       toast.success("Project created successfully");
     },
-    onError: (error) => {
-      toast.error(`Failed to create project: ${error.message}`);
-    },
-  });
-
-  const generateImageMutation = trpc.image.generate.useMutation({
-    onSuccess: (data) => {
-      const imageUrl = data.url || null;
-      if (imageUrl) {
-        setGeneratedImage({ url: imageUrl, format: "png" });
-                        setGeneratedImages((prev) => {
-                          const updated = [
-                            {
-                              id: Date.now().toString(),
-                              url: imageUrl,
-                              prompt: prompt,
-                              createdAt: new Date(),
-                            },
-                            ...prev,
-                          ];
-                          // Keep only last MAX_IMAGES_IN_MEMORY to prevent memory bloat
-                          return updated.slice(0, MAX_IMAGES_IN_MEMORY);
-                        });
-        toast.success("Image generated successfully");
-      }
-    },
-    onError: (error) => {
-      toast.error(`Failed to generate image: ${error.message}`);
-    },
-  });
-
-  const generateLogoMutation = trpc.image.generateLogo.useMutation({
-    onSuccess: (data) => {
-      const imageUrl = data.url || null;
-      if (imageUrl) {
-        setGeneratedImage({ url: imageUrl, format: "png" });
-                        setGeneratedImages((prev) => {
-                          const updated = [
-                            {
-                              id: Date.now().toString(),
-                              url: imageUrl,
-                              prompt: `Logo for ${companyName}`,
-                              createdAt: new Date(),
-                            },
-                            ...prev,
-                          ];
-                          // Keep only last MAX_IMAGES_IN_MEMORY to prevent memory bloat
-                          return updated.slice(0, MAX_IMAGES_IN_MEMORY);
-                        });
-        toast.success("Logo generated successfully");
-      }
-    },
-    onError: (error) => {
-      toast.error(`Failed to generate logo: ${error.message}`);
-    },
+    onError: (error) => toast.error(`Failed to create project: ${error.message}`),
   });
 
   const imageProjects = projects?.filter((p) => p.type === "image") || [];
+  const projectId = imageProjects[0]?.id;
 
-  const handleCreateProject = async () => {
+  const handleCreateProject = () => {
     if (!projectName.trim()) return;
-    
-    try {
-      await createProjectMutation.mutateAsync({
-        name: projectName,
-        type: "image",
-        description: "Image generation project",
-      });
-    } catch (error) {
-      console.error("Error creating project:", error);
-    }
-  };
-
-  const handleGenerateImage = async () => {
-    if (!prompt.trim() || !imageProjects[0]) {
-      toast.error("Please enter a prompt and create a project first");
-      return;
-    }
-    
-    try {
-      await generateImageMutation.mutateAsync({
-        projectId: imageProjects[0].id,
-        prompt,
-        characterId: characterId === "none" ? undefined : Number(characterId),
-      });
-    } catch (error) {
-      console.error("Error generating image:", error);
-    }
-  };
-
-  const handleGenerateLogo = async () => {
-    if (!companyName.trim() || !imageProjects[0]) {
-      toast.error("Please enter a company name and create a project first");
-      return;
-    }
-    
-    try {
-      await generateLogoMutation.mutateAsync({
-        projectId: imageProjects[0].id,
-        companyName,
-      });
-    } catch (error) {
-      console.error("Error generating logo:", error);
-    }
-  };
-
-  const handleDownloadImage = (imageUrl: string, format: "png" | "jpg") => {
-    try {
-      const link = document.createElement("a");
-      link.href = imageUrl;
-      link.download = `image-${Date.now()}.${format}`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      toast.success(`Image downloaded as ${format.toUpperCase()}`);
-    } catch (error) {
-      console.error("Error downloading image:", error);
-      toast.error("Failed to download image");
-    }
-  };
-
-  const handleCopyImageUrl = (imageUrl: string) => {
-    try {
-      navigator.clipboard.writeText(imageUrl);
-      toast.success("Image URL copied to clipboard");
-    } catch (error) {
-      console.error("Error copying URL:", error);
-      toast.error("Failed to copy URL");
-    }
-  };
-
-  const handleShareImage = (imageUrl: string) => {
-    try {
-      if (navigator.share) {
-        navigator.share({
-          title: "Generated Image",
-          text: "Check out this AI-generated image from IvorVerse AI",
-          url: imageUrl,
-        });
-      } else {
-        // Fallback: copy to clipboard
-        handleCopyImageUrl(imageUrl);
-      }
-    } catch (error) {
-      console.error("Error sharing image:", error);
-      toast.error("Failed to share image");
-    }
+    createProjectMutation.mutate({ name: projectName, type: "image", description: "Image generation project" });
   };
 
   return (
@@ -190,9 +295,7 @@ export default function ImageFeature() {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-3xl font-bold">Image Studio</h1>
-            <p className="text-muted-foreground mt-2">
-              Create images, logos, thumbnails, and social media graphics
-            </p>
+            <p className="text-muted-foreground mt-2">Create images, logos, thumbnails, and social media graphics</p>
           </div>
           <Dialog open={isOpen} onOpenChange={setIsOpen}>
             <DialogTrigger asChild>
@@ -204,18 +307,14 @@ export default function ImageFeature() {
             <DialogContent>
               <DialogHeader>
                 <DialogTitle>Create New Image Project</DialogTitle>
-                <DialogDescription>
-                  Start a new image generation project
-                </DialogDescription>
+                <DialogDescription>Start a new image generation project</DialogDescription>
               </DialogHeader>
               <div className="space-y-4">
                 <Input
                   placeholder="Enter project name..."
                   value={projectName}
                   onChange={(e) => setProjectName(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") handleCreateProject();
-                  }}
+                  onKeyDown={(e) => e.key === "Enter" && handleCreateProject()}
                 />
                 <Button
                   onClick={handleCreateProject}
@@ -229,262 +328,38 @@ export default function ImageFeature() {
           </Dialog>
         </div>
 
-        {imageProjects.length === 0 ? (
+        {projectId === undefined ? (
           <Card>
             <CardHeader>
               <CardTitle>No Projects Yet</CardTitle>
-              <CardDescription>
-                Create your first image project to get started
-              </CardDescription>
+              <CardDescription>Create your first image project to get started</CardDescription>
             </CardHeader>
             <CardContent>
               <Button onClick={() => setIsOpen(true)}>Create First Project</Button>
             </CardContent>
           </Card>
         ) : (
-          <Tabs defaultValue="generate" className="w-full">
-            <TabsList className="grid w-full grid-cols-3">
-              <TabsTrigger value="generate">Generate Image</TabsTrigger>
-              <TabsTrigger value="logo">Generate Logo</TabsTrigger>
-              <TabsTrigger value="gallery">Gallery ({generatedImages.length})</TabsTrigger>
+          <Tabs defaultValue="image" className="w-full">
+            <TabsList className="grid w-full grid-cols-5">
+              <TabsTrigger value="image">Image</TabsTrigger>
+              <TabsTrigger value="thumbnail">Thumbnail</TabsTrigger>
+              <TabsTrigger value="graphic">Graphic</TabsTrigger>
+              <TabsTrigger value="logo">Logo</TabsTrigger>
+              <TabsTrigger value="gallery">Gallery</TabsTrigger>
             </TabsList>
-
-            <TabsContent value="generate" className="space-y-4">
-              <Card>
-                <CardHeader>
-                  <CardTitle>Generate Image</CardTitle>
-                  <CardDescription>
-                    Describe the image you want to create
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <Textarea
-                    placeholder="Describe your image in detail..."
-                    value={prompt}
-                    onChange={(e) => setPrompt(e.target.value)}
-                    rows={4}
-                  />
-                  <div className="space-y-1.5">
-                    <Label>Character (optional)</Label>
-                    <Select value={characterId} onValueChange={setCharacterId}>
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="none">No character</SelectItem>
-                        {(characters ?? []).map((c) => (
-                          <SelectItem key={c.id} value={String(c.id)} disabled={!c.faceImageUrl}>
-                            {c.name}
-                            {!c.faceImageUrl ? " (add a face first)" : ""}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <p className="text-xs text-muted-foreground">
-                      {characters && characters.length > 0 ? (
-                        "Uses the character's face so the same person appears in your image."
-                      ) : (
-                        <>
-                          Create characters with a face image in{" "}
-                          <Link href="/feature/character" className="underline">
-                            Characters
-                          </Link>{" "}
-                          to feature them here.
-                        </>
-                      )}
-                    </p>
-                  </div>
-                  <Button
-                    onClick={handleGenerateImage}
-                    disabled={!prompt.trim() || generateImageMutation.isPending}
-                    className="w-full"
-                  >
-                    {generateImageMutation.isPending ? (
-                      <>
-                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                        Generating...
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles className="w-4 h-4 mr-2" />
-                        Generate Image
-                      </>
-                    )}
-                  </Button>
-
-                  {generatedImage && (
-                    <div className="mt-6 space-y-4">
-                      <img
-                        src={generatedImage.url}
-                        alt="Generated"
-                        className="w-full rounded-lg border"
-                      />
-                      <div className="grid grid-cols-3 gap-2">
-                        <Button
-                          onClick={() => handleDownloadImage(generatedImage.url, "png")}
-                          variant="outline"
-                          className="w-full"
-                        >
-                          <Download className="w-4 h-4 mr-2" />
-                          PNG
-                        </Button>
-                        <Button
-                          onClick={() => handleDownloadImage(generatedImage.url, "jpg")}
-                          variant="outline"
-                          className="w-full"
-                        >
-                          <Download className="w-4 h-4 mr-2" />
-                          JPG
-                        </Button>
-                        <Button
-                          onClick={() => handleCopyImageUrl(generatedImage.url)}
-                          variant="outline"
-                          className="w-full"
-                        >
-                          <Copy className="w-4 h-4 mr-2" />
-                          Copy URL
-                        </Button>
-                      </div>
-                      <Button
-                        onClick={() => handleShareImage(generatedImage.url)}
-                        variant="outline"
-                        className="w-full"
-                      >
-                        <Share2 className="w-4 h-4 mr-2" />
-                        Share
-                      </Button>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            </TabsContent>
-
-            <TabsContent value="logo" className="space-y-4">
-              <Card>
-                <CardHeader>
-                  <CardTitle>Generate Logo</CardTitle>
-                  <CardDescription>
-                    Create a professional logo for your company
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <Input
-                    placeholder="Enter company name..."
-                    value={companyName}
-                    onChange={(e) => setCompanyName(e.target.value)}
-                  />
-                  <Button
-                    onClick={handleGenerateLogo}
-                    disabled={!companyName.trim() || generateLogoMutation.isPending}
-                    className="w-full"
-                  >
-                    {generateLogoMutation.isPending ? (
-                      <>
-                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                        Generating...
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles className="w-4 h-4 mr-2" />
-                        Generate Logo
-                      </>
-                    )}
-                  </Button>
-
-                  {generatedImage && (
-                    <div className="mt-6 space-y-4">
-                      <img
-                        src={generatedImage.url}
-                        alt="Generated Logo"
-                        className="w-full rounded-lg border bg-white p-4"
-                      />
-                      <div className="grid grid-cols-3 gap-2">
-                        <Button
-                          onClick={() => handleDownloadImage(generatedImage.url, "png")}
-                          variant="outline"
-                          className="w-full"
-                        >
-                          <Download className="w-4 h-4 mr-2" />
-                          PNG
-                        </Button>
-                        <Button
-                          onClick={() => handleDownloadImage(generatedImage.url, "jpg")}
-                          variant="outline"
-                          className="w-full"
-                        >
-                          <Download className="w-4 h-4 mr-2" />
-                          JPG
-                        </Button>
-                        <Button
-                          onClick={() => handleCopyImageUrl(generatedImage.url)}
-                          variant="outline"
-                          className="w-full"
-                        >
-                          <Copy className="w-4 h-4 mr-2" />
-                          Copy URL
-                        </Button>
-                      </div>
-                      <Button
-                        onClick={() => handleShareImage(generatedImage.url)}
-                        variant="outline"
-                        className="w-full"
-                      >
-                        <Share2 className="w-4 h-4 mr-2" />
-                        Share
-                      </Button>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            </TabsContent>
-
+            {(["image", "thumbnail", "graphic", "logo"] as const).map((kind) => (
+              <TabsContent key={kind} value={kind} forceMount className="space-y-4 data-[state=inactive]:hidden">
+                <CreatePanel kind={kind} projectId={projectId} />
+              </TabsContent>
+            ))}
             <TabsContent value="gallery" className="space-y-4">
               <Card>
                 <CardHeader>
-                  <CardTitle>Generated Images</CardTitle>
-                  <CardDescription>
-                    View all images you've generated
-                  </CardDescription>
+                  <CardTitle>Your Images</CardTitle>
+                  <CardDescription>Everything you've generated, including images from chat and videos</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  {generatedImages.length === 0 ? (
-                    <div className="text-center py-8 text-muted-foreground">
-                      No images generated yet. Start creating!
-                    </div>
-                  ) : (
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                      {generatedImages.map((image) => (
-                        <div key={image.id} className="space-y-2">
-                          <img
-                            src={image.url}
-                            alt={image.prompt}
-                            className="w-full rounded-lg border"
-                          />
-                          <p className="text-sm text-muted-foreground truncate">
-                            {image.prompt}
-                          </p>
-                          <div className="flex gap-2">
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="flex-1"
-                              onClick={() => handleDownloadImage(image.url, "png")}
-                            >
-                              <Download className="w-3 h-3 mr-1" />
-                              Download
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => handleCopyImageUrl(image.url)}
-                            >
-                              <Copy className="w-3 h-3" />
-                            </Button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                  <Gallery />
                 </CardContent>
               </Card>
             </TabsContent>

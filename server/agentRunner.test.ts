@@ -55,7 +55,8 @@ describe("agent task runner", () => {
 
     await runAgentTaskJob({ taskId: 10 }, ctx);
 
-    expect(generateImage).toHaveBeenCalledWith({ prompt: "a cat" });
+    // stored under the task owner's folder
+    expect(generateImage).toHaveBeenCalledWith({ prompt: "a cat", userId: 1 });
     const firstCall = create.mock.calls[0][0];
     expect(firstCall.system).toContain("Illustrator");
     expect(firstCall.system).toContain("Make art.");

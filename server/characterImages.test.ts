@@ -9,7 +9,7 @@ vi.mock("./db", async (importOriginal) => ({
     const c = characters.get(id);
     return c && c.userId === userId ? c : undefined;
   }),
-  createFile: vi.fn(),
+  createFile: vi.fn(async () => ({ id: 1 })),
   trackUsage: vi.fn(),
 }));
 vi.mock("./_core/quota", async (orig) => ({

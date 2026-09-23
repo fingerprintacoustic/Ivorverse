@@ -7,8 +7,9 @@ vi.mock("./db", () => ({
   getProductById: vi.fn(async (id: number) => products.get(id)),
   getUserById: vi.fn(async (id: number) => users.get(id)),
   setUserConnectAccount: vi.fn(async (id: number, u: any) => Object.assign(users.get(id), u)),
+  deleteSale: vi.fn(async (key: string) => void sales.delete(key)),
   recordSaleOnce: vi.fn(async (sale: any) => {
-    const key = sale.stripeInvoiceId ?? sale.stripeSessionId;
+    const key = sale.stripeInvoiceId ?? sale.stripeSessionId ?? sale.stripeObjectId;
     if (sales.has(key)) return false;
     sales.set(key, sale);
     return true;
@@ -19,14 +20,21 @@ const stripe = {
   accounts: { retrieve: vi.fn(), create: vi.fn() },
   accountLinks: { create: vi.fn() },
   checkout: { sessions: { create: vi.fn(async () => ({ url: "https://checkout.stripe.test/s" })), retrieve: vi.fn() } },
+  paymentIntents: { retrieve: vi.fn() },
+  invoicePayments: { list: vi.fn() },
 };
 vi.mock("./stripe", () => ({ getStripe: () => stripe }));
 const sendEmail = vi.fn(async () => true);
 vi.mock("./_core/emailService", () => ({ sendEmail }));
 
-const { createProductCheckout, getPurchaseDelivery, recordProductSale, recordProductRenewal } = await import(
-  "./_core/marketplace"
-);
+const {
+  createProductCheckout,
+  getPurchaseDelivery,
+  recordProductSale,
+  recordProductRenewal,
+  recordProductRefund,
+  recordProductDispute,
+} = await import("./_core/marketplace");
 
 const APP = "https://app.test";
 
@@ -172,5 +180,57 @@ describe("recording sales", () => {
     await recordProductSale({ ...session, id: "cs_unpaid", payment_status: "unpaid" });
     expect(sales.size).toBe(0);
     expect(sendEmail).not.toHaveBeenCalled();
+  });
+});
+
+describe("refunds and disputes", () => {
+  const oneTimePayment = () => {
+    stripe.paymentIntents.retrieve.mockResolvedValue({ metadata: { product_id: "10", seller_id: "2" } });
+  };
+
+  it("records a refund of a one-time purchase as a negative sale", async () => {
+    oneTimePayment();
+    await recordProductRefund({ id: "re_1", status: "succeeded", amount: 1999, payment_intent: "pi_1" } as any);
+    await recordProductRefund({ id: "re_1", status: "succeeded", amount: 1999, payment_intent: "pi_1" } as any);
+
+    expect(sales.size).toBe(1);
+    expect(sales.get("re_1")).toMatchObject({ productId: 10, sellerId: 2, amount: -19.99, mode: "refund" });
+  });
+
+  it("traces a refunded subscription charge through its invoice", async () => {
+    stripe.paymentIntents.retrieve.mockResolvedValue({ metadata: {} });
+    stripe.invoicePayments.list.mockResolvedValue({
+      data: [{ invoice: { parent: { subscription_details: { metadata: { product_id: "10", seller_id: "2" } } } } }],
+    });
+    await recordProductRefund({ id: "re_2", status: "pending", amount: 500, payment_intent: "pi_sub" } as any);
+
+    expect(stripe.invoicePayments.list).toHaveBeenCalledWith(
+      expect.objectContaining({ payment: { type: "payment_intent", payment_intent: "pi_sub" } })
+    );
+    expect(sales.get("re_2")).toMatchObject({ amount: -5, mode: "refund" });
+  });
+
+  it("removes a refund that later fails", async () => {
+    oneTimePayment();
+    await recordProductRefund({ id: "re_3", status: "succeeded", amount: 1000, payment_intent: "pi_1" } as any);
+    await recordProductRefund({ id: "re_3", status: "failed", amount: 1000, payment_intent: "pi_1" } as any);
+    expect(sales.has("re_3")).toBe(false);
+  });
+
+  it("ignores refunds of payments that aren't product sales", async () => {
+    stripe.paymentIntents.retrieve.mockResolvedValue({ metadata: {} });
+    stripe.invoicePayments.list.mockResolvedValue({ data: [] });
+    await recordProductRefund({ id: "re_4", status: "succeeded", amount: 2900, payment_intent: "pi_plan" } as any);
+    expect(sales.size).toBe(0);
+  });
+
+  it("records disputed funds leaving and coming back", async () => {
+    oneTimePayment();
+    const dispute = { id: "dp_1", amount: 1999, payment_intent: "pi_1" } as any;
+    await recordProductDispute(dispute, "withdrawn");
+    await recordProductDispute(dispute, "reinstated");
+
+    expect(sales.get("dp_1_withdrawn")).toMatchObject({ amount: -19.99, mode: "dispute" });
+    expect(sales.get("dp_1_reinstated")).toMatchObject({ amount: 19.99, mode: "dispute_reversal" });
   });
 });
