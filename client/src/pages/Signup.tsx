@@ -6,6 +6,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertCircle, CheckCircle } from "lucide-react";
 import { trpc } from "@/lib/trpc";
+import { setPendingPlan } from "@/const";
+import { PLANS } from "@shared/plans";
 
 export default function Signup() {
   const [, setLocation] = useLocation();
@@ -17,6 +19,15 @@ export default function Signup() {
   const [success, setSuccess] = useState(false);
 
   const signupMutation = trpc.auth.signup.useMutation();
+
+  // "Choose Pro/Business" on the Home page links here with ?plan=; Login
+  // picks it up after email verification and sends them to checkout.
+  const [pendingPlan] = useState((): "pro" | "business" | null => {
+    const plan = new URLSearchParams(window.location.search).get("plan");
+    if (plan !== "pro" && plan !== "business") return null;
+    setPendingPlan(plan);
+    return plan;
+  });
 
   const handleSignup = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -107,7 +118,11 @@ export default function Signup() {
       <Card className="w-full max-w-md bg-slate-900 border-indigo-500/20">
         <CardHeader>
           <CardTitle>Create Account</CardTitle>
-          <CardDescription>Join IvorVerse AI and start creating</CardDescription>
+          <CardDescription>
+            {pendingPlan
+              ? `Create your account, then you'll go straight to checkout for ${PLANS[pendingPlan].name}`
+              : "Join IvorVerse AI and start creating"}
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSignup} className="space-y-4">

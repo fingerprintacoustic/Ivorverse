@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertCircle } from "lucide-react";
 import { trpc } from "@/lib/trpc";
+import { safeNextPath, takePendingPlan } from "@/const";
 
 export default function Login() {
   const [, setLocation] = useLocation();
@@ -28,8 +29,11 @@ export default function Login() {
       });
 
       if (result.success) {
-        // Redirect to dashboard
-        setLocation("/dashboard");
+        // Back to where they were sent from, else on to checkout for a plan
+        // picked on the Home page, else the dashboard.
+        const next = safeNextPath(new URLSearchParams(window.location.search).get("next"));
+        const plan = next ? null : takePendingPlan();
+        setLocation(next ?? (plan ? `/settings?upgrade=${plan}` : "/dashboard"));
       }
     } catch (err: any) {
       setError(err.message || "Failed to log in");

@@ -10,6 +10,8 @@ import "./index.css";
 
 const queryClient = new QueryClient();
 
+const AUTH_PAGES = ["/login", "/signup", "/forgot-password", "/reset-password", "/verify-email"];
+
 const redirectToLoginIfUnauthorized = (error: unknown) => {
   if (!(error instanceof TRPCClientError)) return;
   if (typeof window === "undefined") return;
@@ -17,6 +19,8 @@ const redirectToLoginIfUnauthorized = (error: unknown) => {
   const isUnauthorized = error.message === UNAUTHED_ERR_MSG;
 
   if (!isUnauthorized) return;
+  // Already on an auth screen: redirecting would just reload it in a loop.
+  if (AUTH_PAGES.some((p) => window.location.pathname.startsWith(p))) return;
 
   window.location.href = getLoginUrl();
 };

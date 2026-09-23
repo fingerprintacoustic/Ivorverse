@@ -5,7 +5,7 @@ import { Progress } from "@/components/ui/progress";
 import { PLANS, planFeatureList } from "@shared/plans";
 import { trpc } from "@/lib/trpc";
 import { ExternalLink, Loader2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 const PAID_PLANS = [PLANS.pro, PLANS.business];
@@ -85,7 +85,21 @@ export function BillingCard() {
     return () => clearTimeout(timeout);
   }, [awaitingUpgrade, isPaid, tier, utils]);
 
-  const periodEnd = status.data?.currentPeriodEnd ? new Date(status.data.currentPeriodEnd) : null;
+  // Arrived from "Choose Pro/Business" on the Home page (via signup/login):
+  // go straight to Checkout unless they're already subscribed.
+  const [upgradeTo] = useState((): "pro" | "business" | null => {
+    const plan = new URLSearchParams(window.location.search).get("upgrade");
+    return plan === "pro" || plan === "business" ? plan : null;
+  });
+  const startedUpgrade = useRef(false);
+  useEffect(() => {
+    if (!upgradeTo || !status.data || startedUpgrade.current) return;
+    startedUpgrade.current = true;
+    window.history.replaceState(null, "", window.location.pathname);
+    if (!isPaid) checkout.mutate({ tierId: upgradeTo });
+  }, [upgradeTo, status.data, isPaid, checkout]);
+
+  const periodEnd =status.data?.currentPeriodEnd ? new Date(status.data.currentPeriodEnd) : null;
 
   return (
     <Card>
