@@ -30,9 +30,27 @@ function ensureFirebaseApp() {
   }
 }
 
+/**
+ * The bucket name, passed explicitly: db.ts usually initializes the Firebase
+ * app first, without a storageBucket, so relying on the app default failed
+ * with "Bucket name not specified". Locally it comes from
+ * FIREBASE_STORAGE_BUCKET; in Cloud Functions (where FIREBASE_* env names are
+ * reserved) from the FIREBASE_CONFIG the runtime provides.
+ */
+export function storageBucketName(): string {
+  if (process.env.FIREBASE_STORAGE_BUCKET) return process.env.FIREBASE_STORAGE_BUCKET;
+  try {
+    const config = JSON.parse(process.env.FIREBASE_CONFIG ?? "{}");
+    if (typeof config.storageBucket === "string" && config.storageBucket) return config.storageBucket;
+  } catch {
+    // fall through
+  }
+  throw new Error("Storage bucket not configured: set FIREBASE_STORAGE_BUCKET");
+}
+
 function getBucket() {
   ensureFirebaseApp();
-  return getStorage().bucket();
+  return getStorage().bucket(storageBucketName());
 }
 
 function normalizeKey(relKey: string): string {
