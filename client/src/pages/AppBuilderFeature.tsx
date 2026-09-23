@@ -10,7 +10,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useJob } from "@/hooks/useJob";
 import { trpc } from "@/lib/trpc";
 import { downloadZip } from "@/lib/downloadZip";
-import { AlertTriangle, Code, Copy, Download, ExternalLink, FileCode, Loader2, Plus } from "lucide-react";
+import { AlertTriangle, Code, Copy, Download, ExternalLink, FileCode, Loader2, MessageSquare, Plus } from "lucide-react";
+import { Link } from "wouter";
 import { useEffect, useMemo, useState } from "react";
 import { Streamdown } from "streamdown";
 import { toast } from "sonner";
@@ -137,10 +138,18 @@ export default function AppBuilderFeature() {
   const [jobId, setJobId] = useState<number | null>(null);
   const [resultTab, setResultTab] = useState("preview");
 
+  const utils = trpc.useUtils();
   const { data: projects, refetch } = trpc.projects.list.useQuery();
+  const { data: builds } = trpc.appBuilder.listBuilds.useQuery();
   const appProjects = projects?.filter((p) => p.type === "app") || [];
-  const projectId = selectedProjectId ?? appProjects[0]?.id ?? null;
-  const currentProject = appProjects.find((p) => p.id === projectId);
+  // Apps the chat assistant built live under their chat project; list them too
+  const chatBuilds = (builds ?? []).filter((b) => b.projectType !== "app");
+  const options = [
+    ...appProjects.map((p) => ({ id: p.id, name: p.name, fromChat: false })),
+    ...chatBuilds.map((b) => ({ id: b.projectId, name: b.projectName, fromChat: true })),
+  ];
+  const projectId = selectedProjectId ?? options[0]?.id ?? null;
+  const currentProject = options.find((p) => p.id === projectId);
 
   const createProjectMutation = trpc.projects.create.useMutation({
     onSuccess: (project) => {
@@ -168,6 +177,7 @@ export default function AppBuilderFeature() {
   useEffect(() => {
     if (build.isCompleted) {
       savedQuery.refetch();
+      utils.appBuilder.listBuilds.invalidate();
       setResultTab("preview");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -201,15 +211,15 @@ export default function AppBuilderFeature() {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            {appProjects.length > 1 && projectId !== null && (
+            {options.length > 1 && projectId !== null && (
               <Select value={String(projectId)} onValueChange={(v) => setSelectedProjectId(Number(v))}>
-                <SelectTrigger className="w-48">
+                <SelectTrigger className="w-56">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {appProjects.map((p) => (
+                  {options.map((p) => (
                     <SelectItem key={p.id} value={String(p.id)}>
-                      {p.name}
+                      {p.fromChat ? `Chat: ${p.name}` : p.name}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -261,6 +271,18 @@ export default function AppBuilderFeature() {
           </Card>
         ) : (
           <>
+            {currentProject?.fromChat && (
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-muted/40 px-4 py-3 text-sm">
+                <span className="flex items-center gap-2">
+                  <MessageSquare className="w-4 h-4 shrink-0" />
+                  Built by the assistant in the chat "{currentProject.name}". Generating here saves a new version to
+                  that chat.
+                </span>
+                <Button asChild size="sm" variant="outline">
+                  <Link href={`/feature/chat/${currentProject.id}`}>Open Chat</Link>
+                </Button>
+              </div>
+            )}
             <Card>
               <CardHeader>
                 <CardTitle>Describe Your App</CardTitle>

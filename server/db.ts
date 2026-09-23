@@ -932,6 +932,13 @@ export async function getAppProject(projectId: number, userId: number) {
   return results[0];
 }
 
+/** Every saved build for a user, whichever project (App Builder or chat) it's under. */
+export async function getUserAppProjects(userId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return await queryMany<AppProject>(db, "appProjects", [["userId", userId]]);
+}
+
 export async function updateAppProject(
   projectId: number,
   userId: number,

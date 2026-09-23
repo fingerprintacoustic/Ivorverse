@@ -1006,6 +1006,29 @@ You have a web_search tool available — use it whenever the user asks about cur
         return { jobId: job.id };
       }),
 
+    // Every project that has a saved build, including chats where the
+    // assistant built an app, newest first
+    listBuilds: protectedProcedure.query(async ({ ctx }) => {
+      const [apps, projects] = await Promise.all([
+        db.getUserAppProjects(ctx.user.id),
+        db.getUserProjects(ctx.user.id),
+      ]);
+      const byId = new Map(projects.map((p) => [p.id, p]));
+      return apps
+        .filter((a) => a.sourceCode && byId.has(a.projectId))
+        .map((a) => {
+          const project = byId.get(a.projectId)!;
+          return {
+            projectId: a.projectId,
+            projectName: project.name,
+            projectType: project.type,
+            appType: a.appType,
+            updatedAt: a.updatedAt,
+          };
+        })
+        .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+    }),
+
     // The last saved build for a project (so results survive a page reload)
     get: protectedProcedure
       .input(z.object({ projectId: z.number() }))
